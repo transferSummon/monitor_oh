@@ -1,0 +1,173 @@
+export type LifecycleStatus = "new" | "active" | "removed" | "changed";
+export type NotificationType = "new_offer" | "updated_offer" | "removed_offer";
+export type NotificationSource = "offers" | "marketing";
+export type CompetitorModule = "ads" | "offers" | "marketing";
+export type CapabilityState = "enabled" | "in_progress" | "blocked";
+
+export interface CompetitorCapability {
+  module: CompetitorModule;
+  state: CapabilityState;
+  note: string | null;
+}
+
+export interface CompetitorDto {
+  id: number;
+  slug: string;
+  name: string;
+  websiteUrl: string;
+  capabilities: CompetitorCapability[];
+}
+
+export interface DestinationDto {
+  id: number;
+  name: string;
+  country: string;
+}
+
+export interface PaginationMeta {
+  total: number;
+  page: number;
+  limit: number;
+  hasNextPage: boolean;
+}
+
+export interface AdRecord {
+  id: number;
+  creativeId: string;
+  competitorId: number;
+  competitorName: string;
+  destinationId: number | null;
+  destinationName: string | null;
+  destinationCountry: string | null;
+  format: string | null;
+  firstSeenGlobal: string | null;
+  lastSeenGlobal: string | null;
+  status: LifecycleStatus;
+  statusUpdatedAt: string | null;
+  becameNewDate: string | null;
+  changedDate: string | null;
+  becameRemovedDate: string | null;
+  snapshotDate: string | null;
+  imageUrl: string | null;
+  videoUrl: string | null;
+  transparencyUrl: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface AdsResponse {
+  ads: AdRecord[];
+  pagination: PaginationMeta;
+}
+
+export interface AdsSummaryResponse {
+  totalAds: number;
+  newAds: number;
+  activeAds: number;
+  removedAds: number;
+  changedAds: number;
+}
+
+export interface OfferRecord {
+  id: number;
+  externalId: string;
+  offerTitle: string;
+  offerUrl: string;
+  priceNumeric: string | null;
+  currency: string;
+  priceText: string;
+  durationDays: number | null;
+  departureDate: string | null;
+  imageUrl: string | null;
+  description: string | null;
+  createdAt: string;
+  status: LifecycleStatus;
+  statusUpdatedAt: string | null;
+  competitorId: number;
+  competitorName: string;
+  destinationId: number | null;
+  destinationName: string | null;
+  destinationCountry: string | null;
+}
+
+export interface OffersResponse {
+  offers: OfferRecord[];
+  pagination: PaginationMeta;
+}
+
+export interface OffersSummaryResponse {
+  totalOffers: number;
+  newOffers: number;
+  activeOffers: number;
+  removedOffers: number;
+  changedOffers: number;
+}
+
+export interface MarketingOfferRecord {
+  id: number;
+  title: string;
+  description: string | null;
+  url: string | null;
+  ctaText: string | null;
+  validity: string | null;
+  rawText: string | null;
+  createdAt: string;
+  detectedAt: string;
+  competitorId: number;
+  competitorName: string;
+}
+
+export interface MarketingOffersResponse {
+  offers: MarketingOfferRecord[];
+  pagination: PaginationMeta;
+}
+
+export interface NotificationItem {
+  id: string;
+  offerId: string | null;
+  type: NotificationType;
+  statusFilter: Extract<LifecycleStatus, "new" | "removed" | "changed">;
+  source: NotificationSource;
+  competitorId: string | null;
+  competitorName: string;
+  destinationId: string | null;
+  destinationName: string | null;
+  message: string;
+  createdAt: string;
+  isRead: boolean;
+  previewImage: string | null;
+  deepLinkUrl: string | null;
+  priceText: string | null;
+  currentStatus: LifecycleStatus | null;
+}
+
+export interface NotificationsResponse {
+  alerts: NotificationItem[];
+  unreadCount: number;
+  totalCount: number;
+  hasNextPage: boolean;
+}
+
+export interface ListFilters {
+  status?: LifecycleStatus;
+  competitorId?: string;
+  destinationId?: string;
+  search?: string;
+  page?: number;
+  limit?: number;
+  sort?: string;
+  order?: "asc" | "desc";
+}
+
+export interface JobRunRequest {
+  module: CompetitorModule;
+  competitorSlug?: string;
+}
+
+export interface JobRunResponse {
+  ok: boolean;
+  module: CompetitorModule;
+  competitorSlug: string | null;
+  message: string;
+  runId: string | null;
+  counts: Record<string, number>;
+}
