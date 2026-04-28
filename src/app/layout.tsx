@@ -7,8 +7,8 @@ import { listAlerts } from "@/lib/server/repository";
 import "@/app/globals.css";
 
 export const metadata: Metadata = {
-  title: "Wendy Wu Tours UK",
-  description: "Wendy Wu Tours UK ad monitor dashboard.",
+  title: "Olympic Holiday",
+  description: "Olympic Holiday ad monitor dashboard.",
 };
 
 export default async function RootLayout({
