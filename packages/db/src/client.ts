@@ -28,6 +28,7 @@ export function getDb() {
   const sql = postgres(databaseUrl, {
     max: 1,
     prepare: false,
+    onnotice: () => undefined,
   });
 
   cachedSql = sql;

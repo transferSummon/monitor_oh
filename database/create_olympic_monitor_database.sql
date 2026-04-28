@@ -14,6 +14,7 @@ BEGIN;
 
 DROP TABLE IF EXISTS job_errors CASCADE;
 DROP TABLE IF EXISTS job_runs CASCADE;
+DROP TABLE IF EXISTS job_batches CASCADE;
 DROP TABLE IF EXISTS alerts CASCADE;
 DROP TABLE IF EXISTS marketing_offers CASCADE;
 DROP TABLE IF EXISTS offer_classification CASCADE;
@@ -248,9 +249,23 @@ CREATE INDEX alerts_ad_id_idx ON alerts (ad_id);
 CREATE INDEX alerts_offer_id_idx ON alerts (offer_id);
 CREATE INDEX alerts_marketing_offer_id_idx ON alerts (marketing_offer_id);
 
+CREATE TABLE job_batches (
+  id serial PRIMARY KEY,
+  batch_run_id varchar(255) NOT NULL,
+  status job_status NOT NULL,
+  started_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  summary jsonb
+);
+
+CREATE UNIQUE INDEX job_batches_batch_run_id_key ON job_batches (batch_run_id);
+CREATE INDEX job_batches_status_started_at_idx ON job_batches (status, started_at DESC);
+CREATE INDEX job_batches_started_at_idx ON job_batches (started_at DESC);
+
 CREATE TABLE job_runs (
   id serial PRIMARY KEY,
   run_id varchar(255) NOT NULL,
+  batch_run_id varchar(255) REFERENCES job_batches(batch_run_id) ON DELETE SET NULL,
   job_type job_type NOT NULL,
   competitor_id integer REFERENCES competitors(id),
   status job_status NOT NULL,
@@ -262,6 +277,7 @@ CREATE TABLE job_runs (
 );
 
 CREATE INDEX job_runs_run_id_idx ON job_runs (run_id);
+CREATE INDEX job_runs_batch_run_id_idx ON job_runs (batch_run_id);
 CREATE INDEX job_runs_job_type_status_idx ON job_runs (job_type, status);
 CREATE INDEX job_runs_competitor_id_idx ON job_runs (competitor_id);
 CREATE INDEX job_runs_started_at_idx ON job_runs (started_at DESC);
@@ -328,5 +344,6 @@ SELECT setval(pg_get_serial_sequence('offer_changes', 'id'), COALESCE((SELECT MA
 SELECT setval(pg_get_serial_sequence('offer_classification', 'id'), COALESCE((SELECT MAX(id) FROM offer_classification), 1), true);
 SELECT setval(pg_get_serial_sequence('marketing_offers', 'id'), COALESCE((SELECT MAX(id) FROM marketing_offers), 1), true);
 SELECT setval(pg_get_serial_sequence('alerts', 'id'), COALESCE((SELECT MAX(id) FROM alerts), 1), true);
+SELECT setval(pg_get_serial_sequence('job_batches', 'id'), COALESCE((SELECT MAX(id) FROM job_batches), 1), true);
 SELECT setval(pg_get_serial_sequence('job_runs', 'id'), COALESCE((SELECT MAX(id) FROM job_runs), 1), true);
 SELECT setval(pg_get_serial_sequence('job_errors', 'id'), COALESCE((SELECT MAX(id) FROM job_errors), 1), true);

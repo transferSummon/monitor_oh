@@ -6,7 +6,7 @@
   "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "tsx src/cli.ts run --module ads",
+    "start": "tsx src/cli.ts run-all",
     "worker": "tsx src/cli.ts"
   },
   "dependencies": {

@@ -163,9 +163,12 @@ export interface JobRunRequest {
   competitorSlug?: string;
 }
 
+export type JobRunStatus = "success" | "partial" | "blocked" | "failed";
+
 export interface JobRunResponse {
   ok: boolean;
   module: CompetitorModule;
+  status: JobRunStatus;
   competitorSlug: string | null;
   message: string;
   runId: string | null;

@@ -14,7 +14,11 @@
     "scrape:test": "npm --workspace scraper-engine run test",
     "scrape:inspect": "npm --workspace scraper-engine run scrape -- inspect --latest",
     "worker": "npm --workspace @olympic/worker run worker --",
-    "worker:railway": "npm --workspace @olympic/worker run start",
+    "worker:all": "npm run worker -- run-all",
+    "worker:offers": "npm run worker -- run --module offers",
+    "worker:marketing": "npm run worker -- run --module marketing",
+    "worker:ads": "npm run worker -- run --module ads",
+    "worker:railway": "npm run worker:all",
     "worker:build": "npm --workspace @olympic/worker run build",
     "db:build": "npm --workspace @olympic/db run build",
     "contracts:build": "npm --workspace @olympic/contracts run build"

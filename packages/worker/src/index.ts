@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { JobRunRequest, JobRunResponse } from "@olympic/contracts";
+import type { CompetitorModule, JobRunRequest, JobRunResponse, JobRunStatus } from "@olympic/contracts";
 import { competitorSeed, destinationSeed, getDb, hasDatabase, keywordSeed } from "@olympic/db";
 import { sql } from "drizzle-orm";
 import {
@@ -20,6 +20,91 @@ import type { AdsArtifactResult, NormalizedAdRecord } from "./ads/types";
 import { loadLocalEnv } from "./bootstrap-env";
 
 loadLocalEnv();
+
+type JobType = "offers_sync" | "marketing_sync" | "ads_sync";
+
+export interface WorkerLogEvent {
+  event: string;
+  batchRunId?: string | null;
+  module?: CompetitorModule | null;
+  competitorSlug?: string | null;
+  status?: JobRunStatus | "running" | null;
+  durationMs?: number | null;
+  recordsSeen?: number | null;
+  recordsChanged?: number | null;
+  runId?: string | null;
+  errorCode?: string | null;
+  message?: string | null;
+}
+
+export interface WorkerRunOptions {
+  batchRunId?: string | null;
+  logger?: (event: WorkerLogEvent) => void;
+}
+
+const MODULE_JOB_TYPES: Record<CompetitorModule, JobType> = {
+  offers: "offers_sync",
+  marketing: "marketing_sync",
+  ads: "ads_sync",
+};
+
+let telemetrySchemaReady = false;
+
+function createRunId(module: CompetitorModule, slug: string) {
+  return `${module}-${slug}-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+}
+
+export function createBatchRunId() {
+  return `batch-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+}
+
+function getTimeoutMs(module: CompetitorModule) {
+  const defaultValue = module === "ads" ? 12 * 60 * 1000 : 8 * 60 * 1000;
+  const envName = module === "ads" ? "WORKER_ADS_TIMEOUT_MS" : "WORKER_SCRAPE_TIMEOUT_MS";
+  const parsed = Number.parseInt(process.env[envName] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function toJobStatus(statuses: JobRunStatus[]) {
+  if (statuses.length === 0) return "failed" satisfies JobRunStatus;
+  if (statuses.every((status) => status === "success")) return "success" satisfies JobRunStatus;
+  if (statuses.every((status) => status === "blocked")) return "blocked" satisfies JobRunStatus;
+  if (statuses.every((status) => status === "failed")) return "failed" satisfies JobRunStatus;
+  return "partial" satisfies JobRunStatus;
+}
+
+function emitWorkerLog(options: WorkerRunOptions | undefined, event: WorkerLogEvent) {
+  options?.logger?.({
+    batchRunId: options.batchRunId ?? null,
+    ...event,
+  });
+}
+
+class WorkerTimeoutError extends Error {
+  readonly code = "timeout";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkerTimeoutError";
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeout: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new WorkerTimeoutError(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+}
 
 function hashValue(value: string) {
   return createHash("sha256").update(value).digest("hex");
@@ -99,15 +184,130 @@ function toIsoString(value: string | null | undefined) {
   return date.toISOString();
 }
 
-async function startJobRun(runId: string, jobType: "offers_sync" | "marketing_sync" | "ads_sync", competitorId: number | null) {
+async function ensureWorkerTelemetrySchema() {
+  if (telemetrySchemaReady || !hasDatabase()) return;
+
+  const db = getDb();
+  if (!db) return;
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS job_batches (
+      id serial PRIMARY KEY,
+      batch_run_id varchar(255) NOT NULL,
+      status job_status NOT NULL,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz,
+      summary jsonb
+    )
+  `);
+
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS job_batches_batch_run_id_key
+      ON job_batches (batch_run_id)
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS job_batches_status_started_at_idx
+      ON job_batches (status, started_at DESC)
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS job_batches_started_at_idx
+      ON job_batches (started_at DESC)
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE job_runs
+      ADD COLUMN IF NOT EXISTS batch_run_id varchar(255)
+  `);
+
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'job_runs_batch_run_id_fkey'
+      ) THEN
+        ALTER TABLE job_runs
+          ADD CONSTRAINT job_runs_batch_run_id_fkey
+          FOREIGN KEY (batch_run_id)
+          REFERENCES job_batches(batch_run_id)
+          ON DELETE SET NULL;
+      END IF;
+    END $$
+  `);
+
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS job_runs_batch_run_id_idx
+      ON job_runs (batch_run_id)
+  `);
+
+  telemetrySchemaReady = true;
+}
+
+export async function startJobBatch(batchRunId: string) {
   if (!hasDatabase()) return null;
+
+  await ensureWorkerTelemetrySchema();
 
   const db = getDb();
   if (!db) return null;
 
   const rows = await db.execute(sql<{ id: number }>`
-    INSERT INTO job_runs (run_id, job_type, competitor_id, status, records_seen, records_changed, started_at)
-    VALUES (${runId}, ${jobType}, ${competitorId}, 'running', 0, 0, NOW())
+    INSERT INTO job_batches (batch_run_id, status, started_at, finished_at, summary)
+    VALUES (${batchRunId}, 'running', NOW(), NULL, '{}'::jsonb)
+    ON CONFLICT (batch_run_id) DO UPDATE
+      SET status = 'running',
+          started_at = EXCLUDED.started_at,
+          finished_at = NULL,
+          summary = EXCLUDED.summary
+    RETURNING id
+  `);
+
+  return Number(rows[0]?.id ?? 0) || null;
+}
+
+export async function finishJobBatch(
+  batchRunId: string,
+  status: JobRunStatus,
+  summary: Record<string, unknown>,
+) {
+  if (!hasDatabase()) return;
+
+  await ensureWorkerTelemetrySchema();
+
+  const db = getDb();
+  if (!db) return;
+
+  await db.execute(sql`
+    UPDATE job_batches
+    SET status = ${status},
+        summary = ${JSON.stringify(summary)}::jsonb,
+        finished_at = NOW()
+    WHERE batch_run_id = ${batchRunId}
+  `);
+}
+
+async function startJobRun(runId: string, jobType: JobType, competitorId: number | null, batchRunId?: string | null) {
+  if (!hasDatabase()) return null;
+
+  await ensureWorkerTelemetrySchema();
+
+  const db = getDb();
+  if (!db) return null;
+
+  if (batchRunId) {
+    await db.execute(sql`
+      INSERT INTO job_batches (batch_run_id, status, started_at, summary)
+      VALUES (${batchRunId}, 'running', NOW(), '{}'::jsonb)
+      ON CONFLICT (batch_run_id) DO NOTHING
+    `);
+  }
+
+  const rows = await db.execute(sql<{ id: number }>`
+    INSERT INTO job_runs (run_id, batch_run_id, job_type, competitor_id, status, records_seen, records_changed, started_at)
+    VALUES (${runId}, ${batchRunId ?? null}, ${jobType}, ${competitorId}, 'running', 0, 0, NOW())
     RETURNING id
   `);
 
@@ -171,6 +371,142 @@ async function recordJobError(
     INSERT INTO job_errors (job_run_id, error_code, message, details)
     VALUES (${jobRunId}, ${errorCode}, ${message}, ${JSON.stringify(details ?? null)}::jsonb)
   `);
+}
+
+export async function recordExternalJobFailure(input: {
+  batchRunId: string;
+  module: CompetitorModule;
+  competitorSlug: string;
+  errorCode: string;
+  message: string;
+  details?: Record<string, unknown>;
+}) {
+  if (!hasDatabase()) return;
+
+  await ensureWorkerTelemetrySchema();
+
+  const db = getDb();
+  if (!db) return;
+
+  const competitor = competitorSeed.find((item) => item.slug === input.competitorSlug);
+  const jobType = MODULE_JOB_TYPES[input.module];
+
+  const updatedRows = await db.execute(sql<{ id: number }>`
+    UPDATE job_runs
+    SET status = 'failed',
+        error_summary = ${input.message},
+        finished_at = NOW()
+    WHERE batch_run_id = ${input.batchRunId}
+      AND job_type = ${jobType}
+      AND competitor_id IS NOT DISTINCT FROM ${competitor?.id ?? null}
+      AND status = 'running'
+    RETURNING id
+  `);
+
+  let jobRunId = Number(updatedRows[0]?.id ?? 0) || null;
+
+  if (!jobRunId) {
+    jobRunId = await startJobRun(
+      createRunId(input.module, input.competitorSlug),
+      jobType,
+      competitor?.id ?? null,
+      input.batchRunId,
+    );
+
+    await finishJobRun(jobRunId, "failed", 0, 0, input.message);
+  }
+
+  await recordJobError(jobRunId, input.errorCode, input.message, input.details);
+}
+
+export async function inspectLatestBatch() {
+  if (!hasDatabase()) {
+    return {
+      ok: false,
+      message: "DATABASE_URL is not configured.",
+    };
+  }
+
+  await ensureWorkerTelemetrySchema();
+
+  const db = getDb();
+  if (!db) {
+    return {
+      ok: false,
+      message: "Database client could not be created.",
+    };
+  }
+
+  const batches = await db.execute(sql<{
+    id: number;
+    batch_run_id: string;
+    status: JobRunStatus;
+    started_at: Date | string;
+    finished_at: Date | string | null;
+    summary: unknown;
+  }>`
+    SELECT id, batch_run_id, status, started_at, finished_at, summary
+    FROM job_batches
+    ORDER BY started_at DESC
+    LIMIT 1
+  `);
+
+  const batch = batches[0];
+
+  if (!batch) {
+    return {
+      ok: true,
+      message: "No worker batches found.",
+      batch: null,
+      runs: [],
+      errors: [],
+    };
+  }
+
+  const runs = await db.execute(sql`
+    SELECT
+      jr.id,
+      jr.run_id,
+      jr.job_type,
+      jr.status,
+      jr.records_seen,
+      jr.records_changed,
+      jr.started_at,
+      jr.finished_at,
+      jr.error_summary,
+      c.slug AS competitor_slug,
+      c.name AS competitor_name
+    FROM job_runs jr
+    LEFT JOIN competitors c ON c.id = jr.competitor_id
+    WHERE jr.batch_run_id = ${batch.batch_run_id}
+    ORDER BY jr.started_at ASC
+  `);
+
+  const errors = await db.execute(sql`
+    SELECT
+      je.id,
+      je.error_code,
+      je.message,
+      je.details,
+      je.created_at,
+      jr.run_id,
+      jr.job_type,
+      c.slug AS competitor_slug,
+      c.name AS competitor_name
+    FROM job_errors je
+    INNER JOIN job_runs jr ON jr.id = je.job_run_id
+    LEFT JOIN competitors c ON c.id = jr.competitor_id
+    WHERE jr.batch_run_id = ${batch.batch_run_id}
+    ORDER BY je.created_at DESC
+    LIMIT 100
+  `);
+
+  return {
+    ok: true,
+    batch,
+    runs,
+    errors,
+  };
 }
 
 async function maybeInsertAlert(
@@ -483,12 +819,14 @@ async function persistMarketingRecord(result: ScrapeRunResult, competitorId: num
   return { inserted: false };
 }
 
-async function runOffersJob(competitorSlug?: string): Promise<JobRunResponse> {
+async function runOffersJob(competitorSlug?: string, options?: WorkerRunOptions): Promise<JobRunResponse> {
   const slugs = competitorSlug ? [competitorSlug as CompetitorSlug] : competitorSeed.map((item) => item.slug as CompetitorSlug);
   let totalSeen = 0;
   let totalChanged = 0;
   const messages: string[] = [];
   const runIds = new Set<string>();
+  const statuses: JobRunStatus[] = [];
+  const timeoutMs = getTimeoutMs("offers");
 
   for (const slug of slugs) {
     const competitor = competitorSeed.find((item) => item.slug === slug);
@@ -496,58 +834,115 @@ async function runOffersJob(competitorSlug?: string): Promise<JobRunResponse> {
       throw new Error(`Unknown competitor: ${slug}`);
     }
 
-    const result = await runScrape({
-      competitor: slug,
-      capability: "live-prices",
-      adapters: ADAPTERS,
+    const startedAt = Date.now();
+    const runId = createRunId("offers", slug);
+    const jobRunId = await startJobRun(runId, "offers_sync", competitor.id, options?.batchRunId);
+
+    emitWorkerLog(options, {
+      event: "competitor.started",
+      module: "offers",
+      competitorSlug: slug,
+      status: "running",
+      runId,
+      message: `${competitor.name} offers started.`,
     });
 
-    runIds.add(result.runId);
-    totalSeen += result.records.length;
+    try {
+      const result = await withTimeout(
+        runScrape({
+          competitor: slug,
+          capability: "live-prices",
+          adapters: ADAPTERS,
+        }),
+        timeoutMs,
+        `${competitor.name} offers timed out after ${timeoutMs}ms.`,
+      );
 
-    const jobRunId = await startJobRun(result.runId, "offers_sync", competitor.id);
-    await recordJobErrors(jobRunId, result);
+      runIds.add(result.runId);
+      totalSeen += result.records.length;
+      await recordJobErrors(jobRunId, result);
 
-    let changedForCompetitor = 0;
+      let changedForCompetitor = 0;
 
-    if (hasDatabase() && result.records.length > 0) {
-      const seenIds: number[] = [];
+      if (hasDatabase() && result.records.length > 0) {
+        const seenIds: number[] = [];
 
-      for (const record of result.records) {
-        if (record.kind !== "live-price") continue;
+        for (const record of result.records) {
+          if (record.kind !== "live-price") continue;
 
-        const persisted = await persistOfferRecord(result, competitor.id, record);
-        if (persisted.offerId) {
-          seenIds.push(persisted.offerId);
+          const persisted = await persistOfferRecord(result, competitor.id, record);
+          if (persisted.offerId) {
+            seenIds.push(persisted.offerId);
+          }
+          if (persisted.changeType) {
+            changedForCompetitor += 1;
+          }
         }
-        if (persisted.changeType) {
-          changedForCompetitor += 1;
+
+        if (result.status === "success") {
+          changedForCompetitor += await markRemovedOffers(competitor.id, seenIds);
         }
+
+        await ageOfferStatuses();
       }
 
-      if (result.status === "success") {
-        changedForCompetitor += await markRemovedOffers(competitor.id, seenIds);
-      }
+      totalChanged += changedForCompetitor;
+      statuses.push(result.status);
 
-      await ageOfferStatuses();
+      await finishJobRun(
+        jobRunId,
+        result.status,
+        result.records.length,
+        changedForCompetitor,
+        result.blockers.map((item) => item.message).join(" ") || null,
+      );
+
+      messages.push(`${competitor.name}: ${result.status} (${result.records.length} records)`);
+      emitWorkerLog(options, {
+        event: "competitor.finished",
+        module: "offers",
+        competitorSlug: slug,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        recordsSeen: result.records.length,
+        recordsChanged: changedForCompetitor,
+        runId,
+        message: `${competitor.name} offers ${result.status}.`,
+      });
+    } catch (error) {
+      const errorCode = error instanceof WorkerTimeoutError ? error.code : "worker_error";
+      const message = error instanceof Error ? error.message : "Unknown offers worker error.";
+
+      statuses.push("failed");
+      messages.push(`${competitor.name}: failed (${message})`);
+
+      await recordJobError(jobRunId, errorCode, message, {
+        competitorSlug: slug,
+        module: "offers",
+      });
+      await finishJobRun(jobRunId, "failed", 0, 0, message);
+
+      emitWorkerLog(options, {
+        event: "competitor.failed",
+        module: "offers",
+        competitorSlug: slug,
+        status: "failed",
+        durationMs: Date.now() - startedAt,
+        recordsSeen: 0,
+        recordsChanged: 0,
+        runId,
+        errorCode,
+        message,
+      });
     }
-
-    totalChanged += changedForCompetitor;
-
-    await finishJobRun(
-      jobRunId,
-      result.status,
-      result.records.length,
-      changedForCompetitor,
-      result.blockers.map((item) => item.message).join(" ") || null,
-    );
-
-    messages.push(`${competitor.name}: ${result.status} (${result.records.length} records)`);
   }
 
+  const status = toJobStatus(statuses);
+
   return {
-    ok: true,
+    ok: status !== "failed",
     module: "offers",
+    status,
     competitorSlug: competitorSlug ?? null,
     message: hasDatabase()
       ? `Offers sync finished. ${messages.join(" | ")}`
@@ -561,12 +956,14 @@ async function runOffersJob(competitorSlug?: string): Promise<JobRunResponse> {
   };
 }
 
-async function runMarketingJob(competitorSlug?: string): Promise<JobRunResponse> {
+async function runMarketingJob(competitorSlug?: string, options?: WorkerRunOptions): Promise<JobRunResponse> {
   const slugs = competitorSlug ? [competitorSlug as CompetitorSlug] : competitorSeed.map((item) => item.slug as CompetitorSlug);
   let totalSeen = 0;
   let totalInserted = 0;
   const messages: string[] = [];
   const runIds = new Set<string>();
+  const statuses: JobRunStatus[] = [];
+  const timeoutMs = getTimeoutMs("marketing");
 
   for (const slug of slugs) {
     const competitor = competitorSeed.find((item) => item.slug === slug);
@@ -574,46 +971,103 @@ async function runMarketingJob(competitorSlug?: string): Promise<JobRunResponse>
       throw new Error(`Unknown competitor: ${slug}`);
     }
 
-    const result = await runScrape({
-      competitor: slug,
-      capability: "promotions",
-      adapters: ADAPTERS,
+    const startedAt = Date.now();
+    const runId = createRunId("marketing", slug);
+    const jobRunId = await startJobRun(runId, "marketing_sync", competitor.id, options?.batchRunId);
+
+    emitWorkerLog(options, {
+      event: "competitor.started",
+      module: "marketing",
+      competitorSlug: slug,
+      status: "running",
+      runId,
+      message: `${competitor.name} marketing started.`,
     });
 
-    runIds.add(result.runId);
-    totalSeen += result.records.length;
+    try {
+      const result = await withTimeout(
+        runScrape({
+          competitor: slug,
+          capability: "promotions",
+          adapters: ADAPTERS,
+        }),
+        timeoutMs,
+        `${competitor.name} marketing timed out after ${timeoutMs}ms.`,
+      );
 
-    const jobRunId = await startJobRun(result.runId, "marketing_sync", competitor.id);
-    await recordJobErrors(jobRunId, result);
+      runIds.add(result.runId);
+      totalSeen += result.records.length;
+      await recordJobErrors(jobRunId, result);
 
-    let insertedCount = 0;
+      let insertedCount = 0;
 
-    if (hasDatabase() && result.records.length > 0) {
-      for (const record of result.records) {
-        if (record.kind !== "promotion") continue;
-        const persisted = await persistMarketingRecord(result, competitor.id, record);
-        if (persisted.inserted) {
-          insertedCount += 1;
+      if (hasDatabase() && result.records.length > 0) {
+        for (const record of result.records) {
+          if (record.kind !== "promotion") continue;
+          const persisted = await persistMarketingRecord(result, competitor.id, record);
+          if (persisted.inserted) {
+            insertedCount += 1;
+          }
         }
       }
+
+      totalInserted += insertedCount;
+      statuses.push(result.status);
+
+      await finishJobRun(
+        jobRunId,
+        result.status,
+        result.records.length,
+        insertedCount,
+        result.blockers.map((item) => item.message).join(" ") || null,
+      );
+
+      messages.push(`${competitor.name}: ${result.status} (${result.records.length} records)`);
+      emitWorkerLog(options, {
+        event: "competitor.finished",
+        module: "marketing",
+        competitorSlug: slug,
+        status: result.status,
+        durationMs: Date.now() - startedAt,
+        recordsSeen: result.records.length,
+        recordsChanged: insertedCount,
+        runId,
+        message: `${competitor.name} marketing ${result.status}.`,
+      });
+    } catch (error) {
+      const errorCode = error instanceof WorkerTimeoutError ? error.code : "worker_error";
+      const message = error instanceof Error ? error.message : "Unknown marketing worker error.";
+
+      statuses.push("failed");
+      messages.push(`${competitor.name}: failed (${message})`);
+
+      await recordJobError(jobRunId, errorCode, message, {
+        competitorSlug: slug,
+        module: "marketing",
+      });
+      await finishJobRun(jobRunId, "failed", 0, 0, message);
+
+      emitWorkerLog(options, {
+        event: "competitor.failed",
+        module: "marketing",
+        competitorSlug: slug,
+        status: "failed",
+        durationMs: Date.now() - startedAt,
+        recordsSeen: 0,
+        recordsChanged: 0,
+        runId,
+        errorCode,
+        message,
+      });
     }
-
-    totalInserted += insertedCount;
-
-    await finishJobRun(
-      jobRunId,
-      result.status,
-      result.records.length,
-      insertedCount,
-      result.blockers.map((item) => item.message).join(" ") || null,
-    );
-
-    messages.push(`${competitor.name}: ${result.status} (${result.records.length} records)`);
   }
 
+  const status = toJobStatus(statuses);
+
   return {
-    ok: true,
+    ok: status !== "failed",
     module: "marketing",
+    status,
     competitorSlug: competitorSlug ?? null,
     message: hasDatabase()
       ? `Marketing sync finished. ${messages.join(" | ")}`
@@ -999,12 +1453,13 @@ async function ageAdStatuses() {
   `);
 }
 
-async function runAdsJob(competitorSlug?: string): Promise<JobRunResponse> {
+async function runAdsJob(competitorSlug?: string, options?: WorkerRunOptions): Promise<JobRunResponse> {
   const configured = Boolean(process.env.DATAFORSEO_LOGIN && process.env.DATAFORSEO_PASSWORD);
   if (!configured) {
     return {
       ok: false,
       module: "ads",
+      status: "blocked",
       competitorSlug: competitorSlug ?? null,
       message: "Ads sync is blocked until DataForSEO credentials are provided.",
       runId: null,
@@ -1022,6 +1477,8 @@ async function runAdsJob(competitorSlug?: string): Promise<JobRunResponse> {
   const artifactResults: AdsArtifactResult[] = [];
   let totalSeen = 0;
   let totalChanged = 0;
+  const statuses: JobRunStatus[] = [];
+  const timeoutMs = getTimeoutMs("ads");
 
   try {
     for (const slug of slugs) {
@@ -1031,114 +1488,188 @@ async function runAdsJob(competitorSlug?: string): Promise<JobRunResponse> {
       }
 
       const targets = ADS_COMPETITOR_TARGETS[slug] ?? [new URL(competitor.websiteUrl).hostname];
-      const jobRunId = await startJobRun(runId, "ads_sync", competitor.id);
-      const rawRecords: Array<{
-        target: string;
-        advertiserId: string;
-        advertiserTitle: string;
-        creativeId: string;
-        transparencyUrl: string;
-        verified: boolean;
-        format: string;
-        previewImageUrl: string | null;
-        previewImageHeight: number | null;
-        previewImageWidth: number | null;
-        previewUrl: string | null;
-        firstShown: string | null;
-        lastShown: string | null;
-        rawData: Record<string, unknown>;
-      }> = [];
-      const notes: string[] = [];
-      const blockers: Array<{ code: string; message: string }> = [];
-      let hardFailures = 0;
+      const startedAt = Date.now();
+      const competitorRunId = createRunId("ads", slug);
+      const jobRunId = await startJobRun(competitorRunId, "ads_sync", competitor.id, options?.batchRunId);
 
-      for (const target of targets) {
-        try {
-          const result = await fetchGoogleAdsByTarget({
-            target,
-            locationName: settings.locationName,
-            platform: settings.platform,
-            depth: settings.depth,
-          });
-
-          if (result.status === "no_results") {
-            notes.push(`${target}: no Google ads found in ${settings.locationName}.`);
-            continue;
-          }
-
-          notes.push(`${target}: ${result.items.length} ads fetched.`);
-
-          rawRecords.push(
-            ...result.items.map((item) => ({
-              target,
-              advertiserId: item.advertiser_id,
-              advertiserTitle: item.title,
-              creativeId: item.creative_id,
-              transparencyUrl: item.url,
-              verified: Boolean(item.verified),
-              format: item.format,
-              previewImageUrl: item.preview_image?.url ?? null,
-              previewImageHeight: typeof item.preview_image?.height === "number" ? item.preview_image.height : null,
-              previewImageWidth: typeof item.preview_image?.width === "number" ? item.preview_image.width : null,
-              previewUrl: item.preview_url ?? null,
-              firstShown: toIsoString(item.first_shown ?? null),
-              lastShown: toIsoString(item.last_shown ?? null),
-              rawData: item as unknown as Record<string, unknown>,
-            })),
-          );
-        } catch (error) {
-          hardFailures += 1;
-          const message = error instanceof Error ? error.message : "Unknown ads fetch error.";
-          blockers.push({ code: "dataforseo_error", message: `${target}: ${message}` });
-          await recordJobError(jobRunId, "dataforseo_error", message, { target });
-        }
-      }
-
-      const enrichedRecords = await enrichAdsWithClassification(competitor.id, dedupeAds(rawRecords));
-      totalSeen += enrichedRecords.length;
-
-      let changedCount = 0;
-      if (hasDatabase()) {
-        const seenAdIds: number[] = [];
-
-        for (const record of enrichedRecords) {
-          const persisted = await persistAdRecord(record);
-          if (persisted.adId) {
-            seenAdIds.push(persisted.adId);
-          }
-          if (persisted.changeType) {
-            changedCount += 1;
-          }
-        }
-
-        if (hardFailures === 0) {
-          changedCount += await markRemovedAds(competitor.id, seenAdIds);
-        }
-
-        await ageAdStatuses();
-      }
-
-      totalChanged += changedCount;
-
-      const status =
-        hardFailures === 0 ? "success" : enrichedRecords.length > 0 ? "partial" : "blocked";
-
-      artifactResults.push({
+      emitWorkerLog(options, {
+        event: "competitor.started",
+        module: "ads",
         competitorSlug: slug,
-        competitorName: competitor.name,
-        status,
-        notes,
-        blockers,
-        records: enrichedRecords,
+        status: "running",
+        runId: competitorRunId,
+        message: `${competitor.name} ads started.`,
       });
 
-      await finishJobRun(
-        jobRunId,
-        status,
-        enrichedRecords.length,
-        changedCount,
-        blockers.map((item) => item.message).join(" ") || null,
-      );
+      try {
+        const competitorResult = await withTimeout(
+          (async () => {
+            const rawRecords: Array<{
+              target: string;
+              advertiserId: string;
+              advertiserTitle: string;
+              creativeId: string;
+              transparencyUrl: string;
+              verified: boolean;
+              format: string;
+              previewImageUrl: string | null;
+              previewImageHeight: number | null;
+              previewImageWidth: number | null;
+              previewUrl: string | null;
+              firstShown: string | null;
+              lastShown: string | null;
+              rawData: Record<string, unknown>;
+            }> = [];
+            const notes: string[] = [];
+            const blockers: Array<{ code: string; message: string }> = [];
+            let hardFailures = 0;
+
+            for (const target of targets) {
+              try {
+                const result = await fetchGoogleAdsByTarget({
+                  target,
+                  locationName: settings.locationName,
+                  platform: settings.platform,
+                  depth: settings.depth,
+                });
+
+                if (result.status === "no_results") {
+                  notes.push(`${target}: no Google ads found in ${settings.locationName}.`);
+                  continue;
+                }
+
+                notes.push(`${target}: ${result.items.length} ads fetched.`);
+
+                rawRecords.push(
+                  ...result.items.map((item) => ({
+                    target,
+                    advertiserId: item.advertiser_id,
+                    advertiserTitle: item.title,
+                    creativeId: item.creative_id,
+                    transparencyUrl: item.url,
+                    verified: Boolean(item.verified),
+                    format: item.format,
+                    previewImageUrl: item.preview_image?.url ?? null,
+                    previewImageHeight: typeof item.preview_image?.height === "number" ? item.preview_image.height : null,
+                    previewImageWidth: typeof item.preview_image?.width === "number" ? item.preview_image.width : null,
+                    previewUrl: item.preview_url ?? null,
+                    firstShown: toIsoString(item.first_shown ?? null),
+                    lastShown: toIsoString(item.last_shown ?? null),
+                    rawData: item as unknown as Record<string, unknown>,
+                  })),
+                );
+              } catch (error) {
+                hardFailures += 1;
+                const message = error instanceof Error ? error.message : "Unknown ads fetch error.";
+                blockers.push({ code: "dataforseo_error", message: `${target}: ${message}` });
+                await recordJobError(jobRunId, "dataforseo_error", message, { target });
+              }
+            }
+
+            const enrichedRecords = await enrichAdsWithClassification(competitor.id, dedupeAds(rawRecords));
+
+            const status: JobRunStatus =
+              hardFailures === 0 ? "success" : enrichedRecords.length > 0 ? "partial" : "blocked";
+
+            return {
+              status,
+              notes,
+              blockers,
+              records: enrichedRecords,
+              hardFailures,
+            };
+          })(),
+          timeoutMs,
+          `${competitor.name} ads timed out after ${timeoutMs}ms.`,
+        );
+
+        let changedCount = 0;
+
+        if (hasDatabase()) {
+          const seenAdIds: number[] = [];
+
+          for (const record of competitorResult.records) {
+            const persisted = await persistAdRecord(record);
+            if (persisted.adId) {
+              seenAdIds.push(persisted.adId);
+            }
+            if (persisted.changeType) {
+              changedCount += 1;
+            }
+          }
+
+          if (competitorResult.hardFailures === 0) {
+            changedCount += await markRemovedAds(competitor.id, seenAdIds);
+          }
+
+          await ageAdStatuses();
+        }
+
+        totalSeen += competitorResult.records.length;
+        totalChanged += changedCount;
+        statuses.push(competitorResult.status);
+
+        artifactResults.push({
+          competitorSlug: slug,
+          competitorName: competitor.name,
+          status: competitorResult.status,
+          notes: competitorResult.notes,
+          blockers: competitorResult.blockers,
+          records: competitorResult.records,
+        });
+
+        await finishJobRun(
+          jobRunId,
+          competitorResult.status,
+          competitorResult.records.length,
+          changedCount,
+          competitorResult.blockers.map((item) => item.message).join(" ") || null,
+        );
+
+        emitWorkerLog(options, {
+          event: "competitor.finished",
+          module: "ads",
+          competitorSlug: slug,
+          status: competitorResult.status,
+          durationMs: Date.now() - startedAt,
+          recordsSeen: competitorResult.records.length,
+          recordsChanged: changedCount,
+          runId: competitorRunId,
+          message: `${competitor.name} ads ${competitorResult.status}.`,
+        });
+      } catch (error) {
+        const errorCode = error instanceof WorkerTimeoutError ? error.code : "worker_error";
+        const message = error instanceof Error ? error.message : "Unknown ads worker error.";
+
+        statuses.push("failed");
+        artifactResults.push({
+          competitorSlug: slug,
+          competitorName: competitor.name,
+          status: "failed",
+          notes: [],
+          blockers: [{ code: errorCode, message }],
+          records: [],
+        });
+
+        await recordJobError(jobRunId, errorCode, message, {
+          competitorSlug: slug,
+          module: "ads",
+        });
+        await finishJobRun(jobRunId, "failed", 0, 0, message);
+
+        emitWorkerLog(options, {
+          event: "competitor.failed",
+          module: "ads",
+          competitorSlug: slug,
+          status: "failed",
+          durationMs: Date.now() - startedAt,
+          recordsSeen: 0,
+          recordsChanged: 0,
+          runId: competitorRunId,
+          errorCode,
+          message,
+        });
+      }
     }
   } finally {
     await shutdownOcr();
@@ -1152,15 +1683,12 @@ async function runAdsJob(competitorSlug?: string): Promise<JobRunResponse> {
     results: artifactResults,
   });
 
-  const overallStatus = artifactResults.some((item) => item.status === "blocked")
-    ? artifactResults.some((item) => item.status === "success" || item.status === "partial")
-      ? "partial"
-      : "blocked"
-    : "success";
+  const overallStatus = toJobStatus(statuses);
 
   return {
-    ok: overallStatus !== "blocked",
+    ok: overallStatus !== "failed",
     module: "ads",
+    status: overallStatus,
     competitorSlug: competitorSlug ?? null,
     message: `Ads sync ${overallStatus}. ${artifactResults
       .map((item) => `${item.competitorName}: ${item.status} (${item.records.length} records)`)
@@ -1174,14 +1702,14 @@ async function runAdsJob(competitorSlug?: string): Promise<JobRunResponse> {
   };
 }
 
-export async function runRequestedJob(request: JobRunRequest): Promise<JobRunResponse> {
+export async function runRequestedJob(request: JobRunRequest, options?: WorkerRunOptions): Promise<JobRunResponse> {
   switch (request.module) {
     case "offers":
-      return runOffersJob(request.competitorSlug);
+      return runOffersJob(request.competitorSlug, options);
     case "marketing":
-      return runMarketingJob(request.competitorSlug);
+      return runMarketingJob(request.competitorSlug, options);
     case "ads":
-      return runAdsJob(request.competitorSlug);
+      return runAdsJob(request.competitorSlug, options);
     default:
       throw new Error(`Unsupported module: ${(request as { module?: string }).module ?? "unknown"}`);
   }

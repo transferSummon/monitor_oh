@@ -1,0 +1,11 @@
+wwt_uk_monitor(for refernce)/
+runs/
+tmp/
+.next/
+node_modules/
+packages/*/dist/
+Dockerfile
+railway.json
+RAILWAY_WORKER_DEPLOYMENT.md
+OLYMPIC_HOLIDAY_MONITOR_PLAN.md
+Competitors.docx

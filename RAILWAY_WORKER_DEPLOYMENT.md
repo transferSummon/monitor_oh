@@ -5,9 +5,10 @@ This repo is ready to deploy the worker as a Railway cron service.
 ## What Runs
 
 - Start command: `npm run worker:railway`
-- Default job: `ads` sync for all configured competitors
+- Default job: full ingestion batch, running `offers`, then `marketing`, then `ads`
 - Schedule: `0 2 * * *`
-- Runtime: Docker, based on the official Playwright image so browser scrapers can run later
+- Runtime: Docker, based on the official Playwright image so browser scrapers can run
+- Logs: structured JSON lines in Railway logs, linked by `batchRunId`
 
 ## Required Railway Variables
 
@@ -33,25 +34,36 @@ Use the existing Railway Postgres connection string for `DATABASE_URL`, or refer
 3. Railway will detect `railway.json` and build with `Dockerfile`.
 4. Add the variables above in the service Variables tab.
 5. Deploy.
-6. Check deploy logs for the JSON result printed by the worker.
+6. Check deploy logs for `batch.started`, `competitor.finished`, and `batch.finished`.
 
 ## Manual Local Test
 
 ```bash
-npm run worker -- run --module ads
+npm run worker:all
+npm run worker -- inspect --latest
+```
+
+For one module only:
+
+```bash
+npm run worker:offers
+npm run worker:marketing
+npm run worker:ads
 ```
 
 For one competitor only:
 
 ```bash
+npm run worker -- run --module offers --competitor ionian-island-holidays
 npm run worker -- run --module ads --competitor tui
 ```
 
-## Later
+## Separate Cron Services
 
-To run offers or marketing as separate Railway cron services, duplicate the worker service and override the start command:
+If the full batch becomes too slow, duplicate the Railway worker service and override the start command per service:
 
 ```bash
 npm run worker -- run --module offers
 npm run worker -- run --module marketing
+npm run worker -- run --module ads
 ```

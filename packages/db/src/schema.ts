@@ -255,9 +255,27 @@ export const alerts = pgTable("alerts", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const jobBatches = pgTable(
+  "job_batches",
+  {
+    id: serial("id").primaryKey(),
+    batchRunId: varchar("batch_run_id", { length: 255 }).notNull(),
+    status: jobStatusEnum("status").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    summary: jsonb("summary"),
+  },
+  (table) => ({
+    batchRunIdKey: uniqueIndex("job_batches_batch_run_id_key").on(table.batchRunId),
+  }),
+);
+
 export const jobRuns = pgTable("job_runs", {
   id: serial("id").primaryKey(),
   runId: varchar("run_id", { length: 255 }).notNull(),
+  batchRunId: varchar("batch_run_id", { length: 255 }).references(() => jobBatches.batchRunId, {
+    onDelete: "set null",
+  }),
   jobType: jobTypeEnum("job_type").notNull(),
   competitorId: integer("competitor_id").references(() => competitors.id),
   status: jobStatusEnum("status").notNull(),
