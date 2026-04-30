@@ -1,7 +1,7 @@
 import { classifyErrorBlocker, classifyHttpBlockers, makeBlocker } from "../core/blockers";
 import { completeRunResult } from "../core/result";
 import type { CompetitorAdapter, SearchWindow } from "../core/types";
-import { parseIonianPropertySearchLivePrices, parseIonianPromotions } from "../parsers";
+import { parseIonianPropertySearchLivePrices, parseIonianSpecialOffersMarketing } from "../parsers";
 
 const promotionsUrl = "https://www.ionianislandholidays.com/special-offers";
 const searchUrl = "https://www.ionianislandholidays.com/search/properties";
@@ -55,7 +55,7 @@ export const ionianIslandHolidaysAdapter: CompetitorAdapter = {
 
     try {
       const response = await context.httpClient.get(promotionsUrl);
-      const records = parseIonianPromotions(response.html, new Date().toISOString());
+      const records = parseIonianSpecialOffersMarketing(response.html, new Date().toISOString());
       const blockers = classifyHttpBlockers(response.status, response.html);
 
       if (records.length === 0) {

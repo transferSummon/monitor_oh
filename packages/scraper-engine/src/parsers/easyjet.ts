@@ -1,21 +1,60 @@
-import { absoluteUrl, canonicalUrl, normalizeText, uniqueBy } from "../core/normalizers";
-import type { LivePriceRecord } from "../core/types";
-import { parsePromotionAnchors } from "./common";
+import { load } from "cheerio";
+
+import { absoluteUrl, canonicalUrl, extractDiscount, normalizeText, uniqueBy } from "../core/normalizers";
+import type { LivePriceRecord, PromotionRecord } from "../core/types";
 
 const easyJetHolidayBaseUrl = "https://www.easyjet.com/en/holidays";
 const easyJetOrigin = "https://www.easyjet.com";
+const easyJetDealsUrl = "https://www.easyjet.com/en/holidays/deals";
 
 export function parseEasyJetPromotions(html: string, collectedAt: string) {
-  return parsePromotionAnchors(html, {
-    competitor: "easyjet-holidays",
-    baseUrl: "https://www.easyjet.com/en/holidays",
-    collectedAt,
-    selectorHint: "a[href*='/en/holidays/']",
-    linkFilter: (href, text) =>
-      href.includes("/en/holidays/") &&
-      !/booking conditions|view all|get help/i.test(text) &&
-      text.length > 5,
+  return parseEasyJetDealsMarketing(html, easyJetDealsUrl, collectedAt);
+}
+
+export function parseEasyJetDealsMarketing(html: string, sourceUrl: string, collectedAt: string) {
+  const $ = load(html);
+  const records: PromotionRecord[] = [];
+
+  $("#main-content .promo-merch-banner, main .promo-merch-banner").each((_, element) => {
+    const card = $(element);
+    const title = readCleanText(card.find(".promo-merch-banner__title").first());
+    const subtitle = readCleanText(card.find(".promo-merch-banner__description").first());
+    const primaryLink = card.find("a.promo-merch-banner__btn[href]").first();
+    const href = primaryLink.attr("href");
+    const recordUrl = canonicalUrl(href, easyJetOrigin) ?? absoluteUrl(href, easyJetOrigin);
+
+    if (!title || !recordUrl) return;
+
+    const terms = readCleanText(card.find(".promo-merch-banner__terms").first());
+    const promoCode = normalizeText(card.find(".promo-code").first().text()) || readEasyJetPromoCode(card.text());
+    const text = [title, subtitle, terms].filter(Boolean).join(" ");
+    const discountText = readEasyJetDiscountText(text);
+
+    records.push({
+      kind: "promotion",
+      competitor: "easyjet-holidays",
+      title,
+      subtitle,
+      priceText: null,
+      discountText,
+      destinationText: null,
+      sourceUrl: recordUrl,
+      imageUrl: readEasyJetMarketingImageUrl(card.find("img").first().attr("src")),
+      offerType: classifyEasyJetMarketingOffer(title, subtitle, promoCode),
+      promoCode,
+      validityText: terms,
+      collectedAt,
+      evidence: {
+        sourceUrl: recordUrl,
+        finalUrl: sourceUrl,
+        rawHtmlPath: null,
+        screenshotPath: null,
+        selector: ".promo-merch-banner",
+      },
+    });
   });
+
+  return uniqueBy(records, (record) => `${record.title}|${record.sourceUrl}`);
 }
 
 export function parseEasyJetPackageSearchLivePrices(
@@ -33,6 +72,72 @@ export function parseEasyJetPackageSearchLivePrices(
     records,
     (record) => `${record.propertyName}|${record.travelDate}|${record.nights}|${record.priceText}|${record.sourceUrl}`,
   );
+}
+
+interface TextSelection {
+  clone(): {
+    find(selector: string): { remove(): void };
+    text(): string;
+  };
+}
+
+function readCleanText(selection: TextSelection) {
+  const clone = selection.clone();
+  clone.find("style,script,svg,button").remove();
+
+  return normalizeText(clone.text()) || null;
+}
+
+function readEasyJetPromoCode(text: string) {
+  const match = normalizeText(text).match(/use code:\s*([A-Z0-9]+)/i);
+
+  return normalizeText(match?.[1]) || null;
+}
+
+function readEasyJetDiscountText(text: string) {
+  const normalized = normalizeText(text);
+  const discount = extractDiscount(normalized);
+
+  if (discount) return discount;
+
+  const priceLimit =
+    normalized.match(/(?:all\s+)?£\s?\d[\d,]*pp\s+or\s+less/i)?.[0] ??
+    normalized.match(/\ball\s+under\s+£\s?\d[\d,]*pp/i)?.[0] ??
+    normalized.match(/\bunder\s+£\s?\d[\d,]*pp/i)?.[0];
+
+  if (priceLimit) return normalizeText(priceLimit);
+
+  const freeChildPlaces = normalized.match(/\bfree child places?\b/i)?.[0];
+  return freeChildPlaces ? normalizeText(freeChildPlaces) : null;
+}
+
+function readEasyJetMarketingImageUrl(value: string | null | undefined) {
+  const imageUrl = canonicalUrl(value, easyJetOrigin) ?? absoluteUrl(value, easyJetOrigin);
+
+  if (!imageUrl) return null;
+
+  try {
+    const parsed = new URL(imageUrl);
+    const source = parsed.pathname.includes("/_next/image") ? parsed.searchParams.get("url") : null;
+
+    return canonicalUrl(source, easyJetOrigin) ?? imageUrl;
+  } catch {
+    return imageUrl;
+  }
+}
+
+function classifyEasyJetMarketingOffer(title: string, subtitle: string | null, promoCode: string | null) {
+  const text = `${title} ${subtitle ?? ""}`.toLowerCase();
+
+  if (promoCode) return "promo-code";
+  if (text.includes("free child")) return "free-child-place";
+  if (text.includes("last minute")) return "last-minute";
+  if (text.includes("city")) return "city-break";
+  if (text.includes("beach")) return "beach-deal";
+  if (text.includes("deals of the week")) return "deals-of-the-week";
+  if (text.includes("under £") || text.includes("or less")) return "budget-deal";
+
+  return "deal-page-offer";
 }
 
 function parseEasyJetPackageOffer(

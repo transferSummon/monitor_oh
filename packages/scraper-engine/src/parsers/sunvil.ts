@@ -1,21 +1,23 @@
 import { load } from "cheerio";
 
 import { absoluteUrl, canonicalUrl, normalizeText, uniqueBy } from "../core/normalizers";
-import type { LivePriceRecord, SearchWindow } from "../core/types";
-import { parsePromotionAnchors } from "./common";
+import type { LivePriceRecord, PromotionRecord, SearchWindow } from "../core/types";
 
 const sunvilOrigin = "https://www.sunvil.co.uk";
+const sunvilOffersUrl = "https://www.sunvil.co.uk/offers";
 
 interface SunvilResultCard {
   propertyName: string;
   destination: string | null;
   priceText: string | null;
+  savingText: string | null;
   sourceUrl: string;
   imageUrl: string | null;
   dateRangeText: string | null;
   boardBasis: string | null;
   departureAirport: string | null;
   cacheResultId: string | null;
+  features: string[];
 }
 
 export interface SunvilPriceAvailabilityRequest {
@@ -33,13 +35,38 @@ export interface SunvilPriceAvailabilityRequest {
 }
 
 export function parseSunvilPromotions(html: string, collectedAt: string) {
-  return parsePromotionAnchors(html, {
-    competitor: "sunvil",
-    baseUrl: "https://www.sunvil.co.uk/offers",
-    collectedAt,
-    selectorHint: "a[href*='/offers/']",
-    linkFilter: (href, text) => href.includes("/offers/") && text.length > 4,
+  return parseSunvilOffersMarketing(html, sunvilOffersUrl, collectedAt);
+}
+
+export function parseSunvilOffersMarketing(payloadText: string, sourceUrl: string, collectedAt: string) {
+  const records = parseSunvilResultCards(payloadText, sourceUrl).map((card): PromotionRecord => {
+    const source = stableSunvilMarketingUrl(card.sourceUrl);
+
+    return {
+      kind: "promotion",
+      competitor: "sunvil",
+      title: card.propertyName,
+      subtitle: buildSunvilMarketingSubtitle(card),
+      priceText: card.priceText,
+      discountText: card.savingText,
+      destinationText: card.destination,
+      sourceUrl: source,
+      imageUrl: card.imageUrl,
+      offerType: card.savingText ? "discounted-property-offer" : "property-offer",
+      promoCode: null,
+      validityText: card.dateRangeText,
+      collectedAt,
+      evidence: {
+        sourceUrl: source,
+        finalUrl: sourceUrl,
+        rawHtmlPath: null,
+        screenshotPath: null,
+        selector: ".offer.result.bg-white",
+      },
+    };
   });
+
+  return uniqueBy(records, (record) => record.sourceUrl ?? record.title);
 }
 
 export function parseSunvilResultsLivePrices(
@@ -159,12 +186,19 @@ function parseSunvilResultCards(payloadText: string, sourceUrl: string) {
         normalizeDestination(card.find(".add-suitcase").first().attr("data-display-location")) ||
         null,
       priceText: readCardPriceText(card.find(".result-cta .price").first().text()),
+      savingText: readCardSavingText(card.find(".result-cta .saving").first().text()),
       sourceUrl: source,
       imageUrl: readCardImageUrl(card),
       dateRangeText: readInfoPopupValue(card, "icon-cal"),
       boardBasis: readInfoPopupValue(card, "icon-board"),
       departureAirport: readInfoPopupValue(card, "icon-airport"),
       cacheResultId: normalizeText(card.find("input[name='cacheResultId']").first().attr("value")) || null,
+      features: card
+        .find(".result-details li")
+        .map((_, item) => normalizeText($(item).text()))
+        .get()
+        .filter(Boolean)
+        .slice(0, 3),
     });
   });
 
@@ -367,6 +401,18 @@ function readCardPriceText(text: string) {
   return match?.[0] ?? null;
 }
 
+function readCardSavingText(text: string) {
+  const normalized = normalizeText(text);
+  const amountMatch = normalized.match(/£\s?(\d[\d,]*(?:\.\d{2})?)/);
+
+  if (!amountMatch) return null;
+
+  const amount = Number(amountMatch[1].replace(/,/g, ""));
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+
+  return normalized;
+}
+
 function readCardImageUrl(card: CheerioSelection) {
   const suitcaseImage = card.find(".add-suitcase").first().attr("data-display-image");
   const image =
@@ -408,6 +454,28 @@ function readWindowPaaValue(html: string, key: string) {
 
 function normalizeDestination(value: string | null | undefined) {
   return normalizeText(value).replace(/\s*,\s*$/, "") || null;
+}
+
+function buildSunvilMarketingSubtitle(card: SunvilResultCard) {
+  const parts = [
+    card.destination,
+    card.boardBasis,
+    card.departureAirport ? `Departing from ${card.departureAirport}` : null,
+    ...card.features,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function stableSunvilMarketingUrl(value: string) {
+  try {
+    const url = new URL(value, sunvilOrigin);
+    url.searchParams.delete("CacheId");
+
+    return canonicalUrl(url.toString(), sunvilOrigin) ?? url.toString();
+  } catch {
+    return canonicalUrl(value, sunvilOrigin) ?? absoluteUrl(value, sunvilOrigin) ?? value;
+  }
 }
 
 function parseJsonObject(payloadText: string | null | undefined) {

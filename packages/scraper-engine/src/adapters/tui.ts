@@ -1,7 +1,7 @@
 import { classifyErrorBlocker, classifyHttpBlockers, makeBlocker } from "../core/blockers";
 import { completeRunResult } from "../core/result";
-import type { CompetitorAdapter } from "../core/types";
-import { parseTuiProductCardsLivePrices, parseTuiPromotions } from "../parsers";
+import type { Blocker, CompetitorAdapter } from "../core/types";
+import { parseTuiDestinationDealsMarketing, parseTuiProductCardsLivePrices } from "../parsers";
 
 const promotionsUrl = "https://www.tui.co.uk/holidays/destination-deals";
 const livePricesUrl =
@@ -137,17 +137,51 @@ export const tuiAdapter: CompetitorAdapter = {
   slug: "tui",
   async runPromotions(context) {
     const notes = [
-      "TUI is browser-required because direct server-side requests return Access Denied.",
+      "TUI marketing offers use the public Deals by Destination landing page component structure.",
+      "The scraper reads hero, article, icon, haul-tab and budget deal cards; browser rendering is only used as a fallback.",
     ];
 
     try {
+      const httpBlockers: Blocker[] = [];
+
+      try {
+        const response = await context.httpClient.get(promotionsUrl);
+        const records =
+          response.status >= 200 && response.status < 300
+            ? parseTuiDestinationDealsMarketing(response.html, response.finalUrl, new Date().toISOString())
+            : [];
+        const blockers = classifyHttpBlockers(response.status, response.html);
+
+        if (response.status < 200 || response.status >= 300) {
+          blockers.push(makeBlocker("transport_error", `TUI destination deals page returned HTTP ${response.status}.`));
+        }
+
+        if (records.length > 0) {
+          return completeRunResult(context, {
+            capability: "promotions",
+            method: "http_html",
+            notes,
+            blockers,
+            records,
+            rawHtml: response.html,
+          });
+        }
+
+        httpBlockers.push(...blockers);
+      } catch (error) {
+        httpBlockers.push(classifyErrorBlocker(error));
+      }
+
       const document = await context.browserPool.getDocument(context.competitor.slug);
       await document.goto(promotionsUrl, { timeoutMs: 60_000, waitMs: 3_500 });
       await document.acceptCookies();
       const html = await document.content();
       const screenshot = await document.takeScreenshot();
-      const records = parseTuiPromotions(html, await document.currentUrl(), new Date().toISOString());
-      const blockers = records.length === 0 ? [makeBlocker("empty_results", "TUI rendered promotions page loaded, but no deal cards were extracted.")] : [];
+      const records = parseTuiDestinationDealsMarketing(html, await document.currentUrl(), new Date().toISOString());
+      const blockers =
+        records.length === 0
+          ? [...httpBlockers, makeBlocker("empty_results", "TUI rendered destination deals page loaded, but no deal cards were extracted.")]
+          : [];
 
       return completeRunResult(context, {
         capability: "promotions",

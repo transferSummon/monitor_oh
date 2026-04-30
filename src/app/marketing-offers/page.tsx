@@ -20,7 +20,6 @@ import {
 import {
   getCompetitors,
   getMarketingOffers,
-  getModuleAnnotation,
   type CompetitorFilterOption,
   type MarketingOfferRecord,
 } from "@/lib/api";
@@ -28,9 +27,6 @@ import {
 const PAGE_LIMIT = 50;
 const ALL_COMPETITORS_VALUE = "__all_competitors__";
 const MARKETING_COMPETITOR_ANNOTATIONS: Partial<Record<string, string>> = {
-  "1": "Currently not available",
-  "3": "Blocked by anti-bot protection",
-  "4": "Blocked by site challenge; marketing offers unavailable.",
   "6": "Blocked by anti-bot protection; marketing offers unavailable.",
 };
 
@@ -183,8 +179,7 @@ export default function MarketingOffersPage() {
               <SelectContent className="w-[min(28rem,calc(100vw-2rem))]">
                 <SelectItem value={ALL_COMPETITORS_VALUE}>All competitors</SelectItem>
                 {competitorOptions.map((option) => {
-                  const annotation =
-                    MARKETING_COMPETITOR_ANNOTATIONS[option.id] ?? getModuleAnnotation(option, "marketing");
+                  const annotation = MARKETING_COMPETITOR_ANNOTATIONS[option.id];
 
                   return (
                     <SelectItem key={option.id} value={option.id} className="items-start">

@@ -1,18 +1,76 @@
-import { absoluteUrl, canonicalUrl, normalizeText, uniqueBy } from "../core/normalizers";
-import type { LivePriceRecord } from "../core/types";
-import { parsePromotionAnchors } from "./common";
+import { load } from "cheerio";
+
+import { absoluteUrl, canonicalUrl, extractDiscount, normalizeText, uniqueBy } from "../core/normalizers";
+import type { LivePriceRecord, PromotionRecord } from "../core/types";
 
 const ionianOrigin = "https://www.ionianislandholidays.com";
+const ionianSpecialOffersUrl = "https://www.ionianislandholidays.com/special-offers";
+
+export function parseIonianSpecialOffersMarketing(html: string, collectedAt: string) {
+  const $ = load(html);
+  const mainCards = $("main article.Promotion").toArray();
+  const selector = mainCards.length > 0 ? "main article.Promotion" : "article.Promotion:not(.MegaMenu-promo)";
+  const cards =
+    mainCards.length > 0
+      ? mainCards
+      : $("article.Promotion")
+          .filter((_, element) => !$(element).hasClass("MegaMenu-promo"))
+          .toArray();
+  const records = cards
+    .map((element) => {
+      const card = $(element);
+      const anchor = card.find("a.Promotion-link[href], a[href*='/special-offers/']").first();
+      const href = anchor.attr("href");
+      const sourceUrl = canonicalUrl(href, ionianSpecialOffersUrl) ?? absoluteUrl(href, ionianOrigin);
+
+      if (!sourceUrl || !sourceUrl.startsWith(`${ionianSpecialOffersUrl}/`)) return null;
+
+      const title =
+        normalizeText(card.find(".Promotion-heading").first().text()) ||
+        normalizeText(card.find("h1,h2,h3,h4,strong").first().text()) ||
+        normalizeText(anchor.text());
+      const subtitle =
+        normalizeText(card.find(".Promotion-text").first().text()) ||
+        normalizeText(card.find("p").first().text()) ||
+        null;
+
+      if (!title || !subtitle) return null;
+
+      const cardText = normalizeText(card.text());
+      const image = card.find("img.Promotion-img, img").first();
+      const imageUrl = canonicalUrl(image.attr("src"), ionianOrigin) ?? absoluteUrl(image.attr("src"), ionianOrigin);
+      const record: PromotionRecord = {
+        kind: "promotion",
+        competitor: "ionian-island-holidays",
+        title,
+        subtitle,
+        priceText: null,
+        discountText: extractDiscount(cardText),
+        destinationText: inferIonianDestination(title, subtitle, image.attr("alt")),
+        sourceUrl,
+        imageUrl,
+        offerType: inferIonianOfferType(title, subtitle),
+        promoCode: null,
+        validityText: inferIonianValidity(title, subtitle),
+        collectedAt,
+        evidence: {
+          sourceUrl,
+          finalUrl: ionianSpecialOffersUrl,
+          rawHtmlPath: null,
+          screenshotPath: null,
+          selector,
+        },
+      };
+
+      return record;
+    })
+    .filter((record): record is PromotionRecord => record !== null);
+
+  return uniqueBy(records, (record) => record.sourceUrl ?? record.title);
+}
 
 export function parseIonianPromotions(html: string, collectedAt: string) {
-  return parsePromotionAnchors(html, {
-    competitor: "ionian-island-holidays",
-    baseUrl: "https://www.ionianislandholidays.com/special-offers",
-    collectedAt,
-    selectorHint: "a[href*='/special-offers/']",
-    linkFilter: (href, text) =>
-      href.includes("/special-offers/") && !href.endsWith("/special-offers") && text.length > 4,
-  });
+  return parseIonianSpecialOffersMarketing(html, collectedAt);
 }
 
 export function parseIonianPropertySearchLivePrices(
@@ -70,6 +128,40 @@ function parseIonianPropertySearchResult(
       selector: "results[]",
     },
   };
+}
+
+function inferIonianOfferType(title: string, subtitle: string) {
+  const text = `${title} ${subtitle}`;
+
+  if (/accommodation-only/i.test(text)) return "accommodation-only";
+  if (/family/i.test(text)) return "family-sale";
+  if (/newest villas|new properties/i.test(text)) return "new-property-offer";
+  if (/sale|off|saving/i.test(text)) return "sale";
+  if (/2027/i.test(text)) return "early-booking";
+
+  return "marketing-offer";
+}
+
+function inferIonianValidity(title: string, subtitle: string) {
+  const text = `${title} ${subtitle}`;
+  const monthMatch = text.match(/\b(?:May|June|July|August|September|October)\s+2026\b/i);
+
+  if (monthMatch) return normalizeText(monthMatch[0]);
+  if (/July and August/i.test(text)) return "July and August";
+  if (/3 weeks prior to departure/i.test(text)) return "Free cancellation up to 3 weeks prior to departure";
+  if (/2027/i.test(text)) return "2027 holidays";
+
+  return null;
+}
+
+function inferIonianDestination(title: string, subtitle: string, imageAlt: string | undefined) {
+  const text = `${title} ${subtitle} ${imageAlt ?? ""}`;
+
+  if (/Greece|Greek|Ionian|Aegean|Lefkada|Skiathos|Parga|Meganisi/i.test(text)) {
+    return "Greece";
+  }
+
+  return null;
 }
 
 function parseJsonObject(payloadText: string) {

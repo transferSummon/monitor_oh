@@ -6,11 +6,12 @@ import {
   extractFormFields,
   extractSunvilPriceAvailabilityRequest,
   extractSunvilResultsBookingUrls,
-  parseSunvilPromotions,
+  parseSunvilOffersMarketing,
   parseSunvilResultsLivePrices,
 } from "../parsers";
 
 const offersUrl = "https://www.sunvil.co.uk/offers";
+const offersSearchUrl = "https://www.sunvil.co.uk/offers/search";
 const discoverUrl = "https://www.sunvil.co.uk/results/discover";
 const getPageUrl = "https://www.sunvil.co.uk/results/getpage?pageNumber=1&toFilter=false";
 const maxLivePriceBookingPages = 5;
@@ -30,16 +31,33 @@ export const sunvilAdapter: CompetitorAdapter = {
   slug: "sunvil",
   async runPromotions(context) {
     const notes = [
-      "Sunvil promotions are HTTP-first from the public /offers page.",
+      "Sunvil marketing offers use the /offers page shell, then the /offers/search JSON feed that populates #offers-holder.",
     ];
 
     try {
-      const response = await context.httpClient.get(offersUrl);
-      const records = parseSunvilPromotions(response.html, new Date().toISOString());
-      const blockers = classifySunvilHttpBlockers(response.status, response.html);
+      const seed = await context.httpClient.get(offersUrl);
+      const response = await context.httpClient.get(offersSearchUrl, {
+        headers: {
+          accept: "application/json, text/javascript, */*; q=0.01",
+          referer: offersUrl,
+          "x-requested-with": "XMLHttpRequest",
+        },
+      });
+      const records =
+        response.status >= 200 && response.status < 300
+          ? parseSunvilOffersMarketing(response.html, response.finalUrl, new Date().toISOString())
+          : [];
+      const blockers = [
+        ...classifySunvilHttpBlockers(seed.status, seed.html),
+        ...classifySunvilHttpBlockers(response.status, response.html),
+      ];
+
+      if (response.status < 200 || response.status >= 300) {
+        blockers.push(makeBlocker("transport_error", `Sunvil offers search returned HTTP ${response.status}.`));
+      }
 
       if (records.length === 0) {
-        blockers.push(makeBlocker("empty_results", "Sunvil offers page loaded, but no offer cards were extracted."));
+        blockers.push(makeBlocker("empty_results", "Sunvil offers search returned no usable offer cards."));
       }
 
       return completeRunResult(context, {
@@ -48,7 +66,7 @@ export const sunvilAdapter: CompetitorAdapter = {
         notes,
         blockers,
         records,
-        rawHtml: response.html,
+        rawHtml: JSON.stringify({ offersPage: seed.html, offersSearch: response.html }),
       });
     } catch (error) {
       return completeRunResult(context, {

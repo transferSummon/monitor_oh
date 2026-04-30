@@ -55,6 +55,10 @@ export interface PromotionRecord {
   discountText: string | null;
   destinationText: string | null;
   sourceUrl: string | null;
+  imageUrl?: string | null;
+  offerType?: string | null;
+  promoCode?: string | null;
+  validityText?: string | null;
   collectedAt: string;
   evidence: RecordEvidence;
 }

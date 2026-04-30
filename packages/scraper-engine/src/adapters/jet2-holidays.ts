@@ -1,8 +1,12 @@
 import { classifyErrorBlocker, classifyHttpBlockers, makeBlocker } from "../core/blockers";
-import { formatUkDate } from "../core/normalizers";
+import { formatUkDate, uniqueBy } from "../core/normalizers";
 import { completeRunResult } from "../core/result";
 import type { CompetitorAdapter, SearchWindow } from "../core/types";
-import { parseJet2Promotions, parseJet2SmartSearchLivePrices } from "../parsers";
+import {
+  parseJet2CurrentOfferTerms,
+  parseJet2DealsMarketing,
+  parseJet2SmartSearchLivePrices,
+} from "../parsers";
 
 const dealsUrl = "https://www.jet2holidays.com/deals";
 const promotionsUrl = "https://www.jet2holidays.com/promotions";
@@ -64,11 +68,21 @@ function buildSmartSearchApiUrl(searchWindow: SearchWindow) {
   return `${smartSearchApiUrl}?${params.toString()}`;
 }
 
+function classifyJet2HttpBlockers(status: number, html: string) {
+  return classifyHttpBlockers(status, html).filter((blocker) => {
+    if (blocker.reason !== "access_denied" || status === 403) return true;
+
+    const activeAccessDenied = /access denied|request blocked|something.?s up/i.test(html);
+    return activeAccessDenied;
+  });
+}
+
 export const jet2HolidaysAdapter: CompetitorAdapter = {
   slug: "jet2-holidays",
   async runPromotions(context) {
     const notes = [
-      "Jet2 promotions use HTTP-first extraction from the public deals and promotions pages.",
+      "Jet2 marketing offers use visible promo blocks from /deals plus the current offer T&C accordion on /promotions.",
+      "Expired promotion sections and dynamic search placeholders are ignored.",
     ];
 
     try {
@@ -76,12 +90,30 @@ export const jet2HolidaysAdapter: CompetitorAdapter = {
         context.httpClient.get(dealsUrl),
         context.httpClient.get(promotionsUrl),
       ]);
-      const combinedHtml = `${deals.html}\n${promotions.html}`;
-      const records = parseJet2Promotions(combinedHtml, new Date().toISOString());
-      const blockers = [...classifyHttpBlockers(deals.status, deals.html), ...classifyHttpBlockers(promotions.status, promotions.html)];
+      const collectedAt = new Date().toISOString();
+      const records = uniqueBy(
+        [
+          ...(deals.status >= 200 && deals.status < 300
+            ? parseJet2DealsMarketing(deals.html, deals.finalUrl, collectedAt)
+            : []),
+          ...(promotions.status >= 200 && promotions.status < 300
+            ? parseJet2CurrentOfferTerms(promotions.html, promotions.finalUrl, collectedAt)
+            : []),
+        ],
+        (record) => `${record.title}|${record.sourceUrl}`,
+      );
+      const blockers = [...classifyJet2HttpBlockers(deals.status, deals.html), ...classifyJet2HttpBlockers(promotions.status, promotions.html)];
+
+      if (deals.status < 200 || deals.status >= 300) {
+        blockers.push(makeBlocker("transport_error", `Jet2 deals page returned HTTP ${deals.status}.`));
+      }
+
+      if (promotions.status < 200 || promotions.status >= 300) {
+        blockers.push(makeBlocker("transport_error", `Jet2 promotions page returned HTTP ${promotions.status}.`));
+      }
 
       if (records.length === 0) {
-        blockers.push(makeBlocker("empty_results", "Jet2 pages loaded, but no promotion cards were extracted."));
+        blockers.push(makeBlocker("empty_results", "Jet2 pages loaded, but no marketing offer records were extracted."));
       }
 
       return completeRunResult(context, {
@@ -90,7 +122,7 @@ export const jet2HolidaysAdapter: CompetitorAdapter = {
         notes,
         blockers,
         records,
-        rawHtml: combinedHtml,
+        rawHtml: JSON.stringify({ deals: deals.html, promotions: promotions.html }),
       });
     } catch (error) {
       return completeRunResult(context, {
@@ -118,7 +150,7 @@ export const jet2HolidaysAdapter: CompetitorAdapter = {
           referer: pageUrl,
         },
       });
-      const blockers = classifyHttpBlockers(response.status, response.html);
+      const blockers = classifyJet2HttpBlockers(response.status, response.html);
       const records =
         response.status >= 200 && response.status < 300
           ? parseJet2SmartSearchLivePrices(response.html, response.finalUrl, new Date().toISOString())

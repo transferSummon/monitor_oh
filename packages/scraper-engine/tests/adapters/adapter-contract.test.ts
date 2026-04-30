@@ -86,7 +86,13 @@ const scenarios = [
     name: "TUI promotions",
     competitor: "tui",
     capability: "promotions",
-    http: async () => ({ get: {} }),
+    http: async () => ({
+      get: {
+        "https://www.tui.co.uk/holidays/destination-deals": {
+          html: await readFixture("tui", "promotions.html"),
+        },
+      },
+    }),
     browser: async () => ({
       initialUrl: "https://www.tui.co.uk/holidays/destination-deals",
       fixtures: {
@@ -125,6 +131,10 @@ const scenarios = [
       get: {
         "https://www.sunvil.co.uk/offers": {
           html: await readFixture("sunvil", "promotions.html"),
+        },
+        "https://www.sunvil.co.uk/offers/search": {
+          html: await readFixture("sunvil", "offers-search.json"),
+          finalUrl: "https://www.sunvil.co.uk/offers/search",
         },
       },
     }),

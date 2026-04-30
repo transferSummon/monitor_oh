@@ -47,6 +47,9 @@ const MODULE_JOB_TYPES: Record<CompetitorModule, JobType> = {
   marketing: "marketing_sync",
   ads: "ads_sync",
 };
+const MARKETING_TITLE_MAX_LENGTH = 500;
+const MARKETING_URL_MAX_LENGTH = 1000;
+const MARKETING_SHORT_TEXT_MAX_LENGTH = 255;
 
 let telemetrySchemaReady = false;
 
@@ -112,6 +115,16 @@ function hashValue(value: string) {
 
 function normalizeText(value: string | null | undefined) {
   return (value ?? "").trim().toLowerCase();
+}
+
+function truncateForColumn(value: string | null | undefined, maxLength: number) {
+  const text = (value ?? "").trim();
+
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  if (maxLength <= 3) return text.slice(0, maxLength);
+
+  return `${text.slice(0, maxLength - 3)}...`;
 }
 
 function escapeRegex(value: string) {
@@ -1017,7 +1030,12 @@ async function persistMarketingRecord(result: ScrapeRunResult, competitorId: num
   }
 
   const canonicalUrl = normalizeUrl(record.sourceUrl ?? record.evidence.finalUrl);
+  const rawText = buildMarketingRawText(record);
   const sourceKey = hashValue([competitorId, canonicalUrl, normalizeText(record.title)].join("|"));
+  const title = truncateForColumn(record.title, MARKETING_TITLE_MAX_LENGTH) ?? "Untitled marketing offer";
+  const url = truncateForColumn(canonicalUrl, MARKETING_URL_MAX_LENGTH);
+  const ctaText = truncateForColumn(record.discountText, MARKETING_SHORT_TEXT_MAX_LENGTH);
+  const validity = truncateForColumn(record.validityText ?? record.priceText, MARKETING_SHORT_TEXT_MAX_LENGTH);
   const snapshotHash = hashValue(
     JSON.stringify({
       title: record.title,
@@ -1025,6 +1043,10 @@ async function persistMarketingRecord(result: ScrapeRunResult, competitorId: num
       priceText: record.priceText,
       discountText: record.discountText,
       destinationText: record.destinationText,
+      imageUrl: record.imageUrl ?? null,
+      offerType: record.offerType ?? null,
+      promoCode: record.promoCode ?? null,
+      validityText: record.validityText ?? null,
       sourceUrl: canonicalUrl,
     }),
   );
@@ -1047,12 +1069,12 @@ async function persistMarketingRecord(result: ScrapeRunResult, competitorId: num
       VALUES (
         ${competitorId},
         ${sourceKey},
-        ${record.title},
+        ${title},
         ${record.subtitle ?? null},
-        ${canonicalUrl},
-        ${record.discountText ?? null},
-        ${record.priceText ?? null},
-        ${[record.title, record.subtitle, record.priceText, record.discountText, record.destinationText].filter(Boolean).join(" ") || null},
+        ${url},
+        ${ctaText},
+        ${validity},
+        ${rawText},
         ${rawData}::jsonb,
         ${snapshotHash},
         ${result.finishedAt},
@@ -1068,12 +1090,12 @@ async function persistMarketingRecord(result: ScrapeRunResult, competitorId: num
   if (String(existing[0]?.snapshot_hash ?? "") !== snapshotHash) {
     await db.execute(sql`
       UPDATE marketing_offers
-      SET title = ${record.title},
+      SET title = ${title},
           description = ${record.subtitle ?? null},
-          url = ${canonicalUrl},
-          cta_text = ${record.discountText ?? null},
-          validity = ${record.priceText ?? null},
-          raw_text = ${[record.title, record.subtitle, record.priceText, record.discountText, record.destinationText].filter(Boolean).join(" ") || null},
+          url = ${url},
+          cta_text = ${ctaText},
+          validity = ${validity},
+          raw_text = ${rawText},
           raw_data = ${rawData}::jsonb,
           snapshot_hash = ${snapshotHash},
           detected_at = ${result.finishedAt}
@@ -1082,6 +1104,23 @@ async function persistMarketingRecord(result: ScrapeRunResult, competitorId: num
   }
 
   return { inserted: false };
+}
+
+function buildMarketingRawText(record: PromotionRecord) {
+  return (
+    [
+      record.title,
+      record.subtitle,
+      record.priceText,
+      record.discountText,
+      record.destinationText,
+      record.offerType,
+      record.promoCode,
+      record.validityText,
+    ]
+      .filter(Boolean)
+      .join(" ") || null
+  );
 }
 
 async function runOffersJob(competitorSlug?: string, options?: WorkerRunOptions): Promise<JobRunResponse> {

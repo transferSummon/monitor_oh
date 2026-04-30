@@ -1,20 +1,27 @@
 import { classifyErrorBlocker, classifyHttpBlockers, makeBlocker } from "../core/blockers";
 import { completeRunResult } from "../core/result";
 import type { CompetitorAdapter, SearchWindow } from "../core/types";
-import { parseEasyJetPackageSearchLivePrices, parseEasyJetPromotions } from "../parsers";
+import { parseEasyJetDealsMarketing, parseEasyJetPackageSearchLivePrices } from "../parsers";
 
 const dealsUrl = "https://www.easyjet.com/en/holidays/deals";
 const packageSearchUrl = "https://www.easyjet.com/holidays/_api/v1.0/search/packages";
-const categoryUrls = [
-  "https://www.easyjet.com/en/holidays/deals/summer-holidays",
-  "https://www.easyjet.com/en/holidays/deals/last-minute-holidays",
-];
 const defaultLivePriceSearch = {
   departure: "LGW",
   geography: "GR",
   flexibleDays: "3",
   pageSize: "12",
 };
+
+function classifyEasyJetHttpBlockers(status: number, html: string) {
+  return classifyHttpBlockers(status, html).filter((blocker) => {
+    if (blocker.reason !== "captcha") return true;
+
+    const activeCaptchaChallenge =
+      /captcha-delivery|please enable js|enable js and disable|verify you are human|access denied/i.test(html);
+
+    return activeCaptchaChallenge;
+  });
+}
 
 function splitAdultsAcrossRooms(adults: number, rooms: number) {
   const adultCount = Math.max(1, adults);
@@ -51,17 +58,23 @@ export const easyJetHolidaysAdapter: CompetitorAdapter = {
   slug: "easyjet-holidays",
   async runPromotions(context) {
     const notes = [
-      "easyJet promotions use HTTP HTML from deals landing pages and category pages.",
+      "easyJet marketing offers use the SSR promo-merch-banner cards on the public deals landing page.",
     ];
 
     try {
-      const responses = await Promise.all([context.httpClient.get(dealsUrl), ...categoryUrls.map((url) => context.httpClient.get(url))]);
-      const combinedHtml = responses.map((response) => response.html).join("\n");
-      const records = parseEasyJetPromotions(combinedHtml, new Date().toISOString());
-      const blockers = responses.flatMap((response) => classifyHttpBlockers(response.status, response.html));
+      const response = await context.httpClient.get(dealsUrl);
+      const records =
+        response.status >= 200 && response.status < 300
+          ? parseEasyJetDealsMarketing(response.html, response.finalUrl, new Date().toISOString())
+          : [];
+      const blockers = classifyEasyJetHttpBlockers(response.status, response.html);
+
+      if (response.status < 200 || response.status >= 300) {
+        blockers.push(makeBlocker("transport_error", `easyJet deals page returned HTTP ${response.status}.`));
+      }
 
       if (records.length === 0) {
-        blockers.push(makeBlocker("empty_results", "easyJet deals pages loaded, but no promotion cards were extracted."));
+        blockers.push(makeBlocker("empty_results", "easyJet deals page loaded, but no promo-merch-banner cards were extracted."));
       }
 
       return completeRunResult(context, {
@@ -70,7 +83,7 @@ export const easyJetHolidaysAdapter: CompetitorAdapter = {
         notes,
         blockers,
         records,
-        rawHtml: combinedHtml,
+        rawHtml: response.html,
       });
     } catch (error) {
       return completeRunResult(context, {

@@ -2,11 +2,16 @@
   <body>
     <form action="/results/discover" id="DiscoverForm" method="post">
       <input name="DiscoverHolidayType" value="" />
-      <input name="Token" value="fixture-token" />
+      <input name="DiscoverDepartureFromDate" value="" />
+      <input name="DiscoverDepartureToDate" value="" />
+      <input name="DiscoverDepartureDates" value="" />
+      <input name="DiscoverPassengers" value="" />
+      <input name="DiscoverAdults" value="2" />
+      <input name="DiscoverChildren" value="0" />
+      <input name="DiscoverInfants" value="0" />
+      <input name="DiscountsOnly" value="true" />
     </form>
-    <article>
-      <a href="/offers/greek-island-escape">Greek Island Escape</a>
-      <p>7 nights from £899 per person Save £100</p>
-    </article>
+    <div id="offers-holder"></div>
+    <script src="/bundles/js/offers?v=fixture"></script>
   </body>
 </html>

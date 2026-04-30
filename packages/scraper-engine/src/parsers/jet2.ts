@@ -1,8 +1,20 @@
-import { absoluteUrl, canonicalUrl, formatUkDate, normalizeText, uniqueBy } from "../core/normalizers";
-import type { LivePriceRecord } from "../core/types";
-import { parseLivePriceAnchors, parseLivePriceJsonLd, parsePromotionAnchors } from "./common";
+import { load } from "cheerio";
+
+import {
+  absoluteUrl,
+  canonicalUrl,
+  extractDiscount,
+  formatUkDate,
+  normalizeText,
+  truncate,
+  uniqueBy,
+} from "../core/normalizers";
+import type { LivePriceRecord, PromotionRecord } from "../core/types";
+import { parseLivePriceAnchors, parseLivePriceJsonLd } from "./common";
 
 const jet2Origin = "https://www.jet2holidays.com";
+const jet2DealsUrl = "https://www.jet2holidays.com/deals";
+const jet2PromotionsUrl = "https://www.jet2holidays.com/promotions";
 const defaultBoardNames = new Map<number, string>([
   [1, "Bed and Breakfast"],
   [2, "Half Board"],
@@ -13,16 +25,156 @@ const defaultBoardNames = new Map<number, string>([
 ]);
 
 export function parseJet2Promotions(html: string, collectedAt: string) {
-  return parsePromotionAnchors(html, {
-    competitor: "jet2-holidays",
-    baseUrl: "https://www.jet2holidays.com/",
-    collectedAt,
-    selectorHint: "a[href*='/deals'], a[href*='/promotions']",
-    linkFilter: (href, text) =>
-      (href.includes("/deals") || href.includes("/promotions")) &&
-      !/view all/i.test(text) &&
-      text.length > 5,
+  return uniqueBy(
+    [
+      ...parseJet2DealsMarketing(html, jet2DealsUrl, collectedAt),
+      ...parseJet2CurrentOfferTerms(html, jet2PromotionsUrl, collectedAt),
+    ],
+    (record) => `${record.title}|${record.sourceUrl}`,
+  );
+}
+
+export function parseJet2DealsMarketing(html: string, sourceUrl: string, collectedAt: string) {
+  const $ = load(html);
+  const records: PromotionRecord[] = [];
+
+  $(".information-bar").each((_, element) => {
+    const bar = $(element);
+    const title = readCleanText(bar.find("h4").first()) || readCleanText(bar);
+
+    if (!title || title.includes("{{")) return;
+
+    records.push(buildJet2PromotionRecord({
+      title,
+      subtitle: null,
+      sourceUrl,
+      finalUrl: sourceUrl,
+      imageUrl: null,
+      text: title,
+      offerType: "sitewide-promo-code",
+      validityText: readJet2ValidityText(title),
+      selector: ".information-bar",
+      collectedAt,
+    }));
   });
+
+  $(".media-block__container").each((_, element) => {
+    const card = $(element);
+    const mediaBlock = card.closest(".media-block");
+    const title = readCleanText(card.find(".media-block__heading").first());
+    const subtitle = readCleanText(card.find(".media-block__content").first());
+    const href = card.find(".media-block__button[href]").first().attr("href");
+    const recordUrl = canonicalUrl(href, jet2Origin) ?? absoluteUrl(href, jet2Origin) ?? sourceUrl;
+
+    if (!title || title.includes("{{")) return;
+
+    records.push(buildJet2PromotionRecord({
+      title,
+      subtitle,
+      sourceUrl: recordUrl,
+      finalUrl: sourceUrl,
+      imageUrl: readJet2MarketingImageUrl(mediaBlock.length > 0 ? mediaBlock : card),
+      text: `${title} ${subtitle ?? ""}`,
+      offerType: classifyJet2MarketingOffer(title, subtitle),
+      validityText: null,
+      selector: ".media-block__container",
+      collectedAt,
+    }));
+  });
+
+  $(".ksps .ksp-block").each((_, element) => {
+    const card = $(element);
+    const title = readCleanText(card.find(".ksp-block__text--big").first());
+    const subtitle = readCleanText(card.find(".ksp-block__text--small").first());
+    const href = card.find(".ksp-block__button[href]").first().attr("href");
+    const recordUrl = canonicalUrl(href, jet2Origin) ?? absoluteUrl(href, jet2Origin) ?? sourceUrl;
+
+    if (!title || title.includes("{{")) return;
+
+    records.push(buildJet2PromotionRecord({
+      title,
+      subtitle,
+      sourceUrl: recordUrl,
+      finalUrl: sourceUrl,
+      imageUrl: null,
+      text: `${title} ${subtitle ?? ""}`,
+      offerType: classifyJet2MarketingOffer(title, subtitle),
+      validityText: null,
+      selector: ".ksps .ksp-block",
+      collectedAt,
+    }));
+  });
+
+  $(".info-card.info-card--with-link").each((_, element) => {
+    const card = $(element);
+    const title = readCleanText(card.find(".info-card__title").first());
+    const subtitle = readCleanText(card.find(".info-card__text").first());
+    const href =
+      card
+        .find("a[href]")
+        .filter((__, anchor) => /read more/i.test(readCleanText($(anchor)) ?? ""))
+        .first()
+        .attr("href") ?? card.find("a[href]").first().attr("href");
+    const recordUrl = canonicalUrl(href, jet2Origin) ?? absoluteUrl(href, jet2Origin) ?? sourceUrl;
+
+    if (!title || title.includes("{{")) return;
+
+    records.push(buildJet2PromotionRecord({
+      title,
+      subtitle,
+      sourceUrl: recordUrl,
+      finalUrl: sourceUrl,
+      imageUrl: readJet2MarketingImageUrl(card),
+      text: `${title} ${subtitle ?? ""}`,
+      offerType: classifyJet2MarketingOffer(title, subtitle),
+      validityText: null,
+      selector: ".info-card.info-card--with-link",
+      collectedAt,
+    }));
+  });
+
+  return uniqueBy(records, (record) => `${record.title}|${record.sourceUrl}`);
+}
+
+export function parseJet2CurrentOfferTerms(html: string, sourceUrl: string, collectedAt: string) {
+  const $ = load(html);
+  const heading = $("h1")
+    .filter((_, element) => readCleanText($(element)) === "Offers terms and conditions - Current")
+    .first();
+  const accordionContainer = heading.closest(".title-and-text").parent().children(".accordion-container").first();
+  const records: PromotionRecord[] = [];
+
+  accordionContainer.find(".accordion.js-dropdown").each((_, element) => {
+    const accordion = $(element);
+    const title = readCleanText(accordion.find(".accordion__header").first());
+    const content = readCleanText(accordion.find(".accordion__content").first());
+
+    if (!title || title.includes("{{") || /promotion expired/i.test(`${title} ${content ?? ""}`)) return;
+
+    const detailText = stripRepeatedTitle(content, title);
+    const text = `${title} ${detailText}`;
+    const anchorName = normalizeText(accordion.find("a[name]").first().attr("name"));
+    const href = accordion.find("a[href]").first().attr("href");
+    const recordUrl =
+      canonicalUrl(href, jet2Origin) ??
+      absoluteUrl(href, jet2Origin) ??
+      (anchorName ? `${sourceUrl}#${encodeURIComponent(anchorName)}` : sourceUrl);
+
+    records.push(buildJet2PromotionRecord({
+      title,
+      subtitle: summarizeJet2TermsContent(detailText, title),
+      sourceUrl: recordUrl,
+      finalUrl: sourceUrl,
+      imageUrl: null,
+      text,
+      offerType: classifyJet2MarketingOffer(title, null),
+      validityText: readJet2ValidityText(detailText || title),
+      selector: ".accordion.js-dropdown",
+      collectedAt,
+    }));
+  });
+
+  return uniqueBy(records, (record) => `${record.title}|${record.sourceUrl}`);
 }
 
 export function parseJet2LivePrices(html: string, baseUrl: string, collectedAt: string) {
@@ -49,6 +201,149 @@ export function parseJet2LivePrices(html: string, baseUrl: string, collectedAt: 
     collectedAt,
     selectorHint: "a[href]",
   });
+}
+
+interface TextSelection {
+  clone(): {
+    find(selector: string): { remove(): void };
+    text(): string;
+  };
+}
+
+interface Jet2PromotionRecordInput {
+  title: string;
+  subtitle: string | null;
+  sourceUrl: string;
+  finalUrl: string;
+  imageUrl: string | null;
+  text: string;
+  offerType: string;
+  validityText: string | null;
+  selector: string;
+  collectedAt: string;
+}
+
+function buildJet2PromotionRecord(input: Jet2PromotionRecordInput): PromotionRecord {
+  return {
+    kind: "promotion",
+    competitor: "jet2-holidays",
+    title: input.title,
+    subtitle: input.subtitle,
+    priceText: null,
+    discountText: readJet2DiscountText(input.text),
+    destinationText: null,
+    sourceUrl: input.sourceUrl,
+    imageUrl: input.imageUrl,
+    offerType: input.offerType,
+    promoCode: readJet2PromoCode(input.text),
+    validityText: input.validityText,
+    collectedAt: input.collectedAt,
+    evidence: {
+      sourceUrl: input.sourceUrl,
+      finalUrl: input.finalUrl,
+      rawHtmlPath: null,
+      screenshotPath: null,
+      selector: input.selector,
+    },
+  };
+}
+
+function readCleanText(selection: TextSelection) {
+  const clone = selection.clone();
+  clone.find("script,style,svg,noscript,template,button").remove();
+
+  return normalizeText(clone.text()) || null;
+}
+
+function readJet2MarketingImageUrl(card: { find(selector: string): { first(): { attr(name: string): string | undefined } } }) {
+  const src =
+    card.find("img[src]").first().attr("src") ??
+    card.find("[data-src]").first().attr("data-src") ??
+    card.find("source[srcset]").first().attr("srcset")?.split(",")[0]?.trim().split(/\s+/)[0];
+
+  return canonicalUrl(src, jet2Origin) ?? absoluteUrl(src, jet2Origin);
+}
+
+function readJet2DiscountText(text: string) {
+  const normalized = normalizeText(text);
+  const discount =
+    normalized.match(/£\s?\d[\d,]*(?:pp| per person| per booking)?\s+off/i)?.[0] ??
+    normalized.match(/\b\d+\s?%\s+(?:off|discount)\b/i)?.[0] ??
+    normalized.match(/\bsave(?:s)?\s+(?:over\s+)?£\s?\d[\d,]*/i)?.[0] ??
+    normalized.match(/\bextra hotel discounts\b/i)?.[0] ??
+    normalized.match(/\bfree child places?\b/i)?.[0] ??
+    normalized.match(/\blow\s+£\s?\d[\d,]*pp deposit\b/i)?.[0] ??
+    extractDiscount(normalized);
+
+  return discount ? normalizeText(discount) : null;
+}
+
+function readJet2PromoCode(text: string) {
+  const normalized = normalizeText(text);
+  const explicitCandidate = normalized.match(/\b(?:promo code|promotion code|code)\s*:?\s*([A-Za-z][A-Za-z0-9]{3,})\b/i)?.[1];
+  const explicit =
+    (explicitCandidate && explicitCandidate === explicitCandidate.toUpperCase() ? explicitCandidate : null) ??
+    normalized.match(/\(([A-Z][A-Z0-9]{3,})\)/)?.[1];
+
+  if (explicit && !/^(REF|RECEIVED|TERMS|CONDITIONS)$/i.test(explicit)) return explicit.toUpperCase();
+
+  return null;
+}
+
+function readJet2ValidityText(text: string) {
+  const normalized = normalizeText(text);
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+/)
+    .map((item) => normalizeText(item))
+    .filter(Boolean)
+    .filter((item) =>
+      /\b(valid|booked between|departures?|departing|arrivals?|travel|sale ends|until|before|by)\b/i.test(item),
+    );
+
+  return sentences.length > 0 ? truncate(sentences.slice(0, 2).join(" "), 260) : null;
+}
+
+function summarizeJet2TermsContent(content: string | null, title: string) {
+  if (!content) return null;
+
+  const withoutTitle = normalizeText(content.replace(title, ""));
+  const sentence =
+    withoutTitle
+      .split(/(?<=[.!?])\s+/)
+      .map((item) => normalizeText(item))
+      .find((item) => item && !/^terms? (?:&|and) conditions/i.test(item)) ?? withoutTitle;
+
+  return truncate(sentence, 240);
+}
+
+function stripRepeatedTitle(content: string | null, title: string) {
+  let output = content ?? "";
+
+  while (title && output.includes(title)) {
+    output = output.replace(title, "");
+  }
+
+  return normalizeText(output);
+}
+
+function classifyJet2MarketingOffer(title: string, subtitle: string | null) {
+  const rawText = `${title} ${subtitle ?? ""}`;
+  const text = rawText.toLowerCase();
+  const titleText = title.toLowerCase();
+
+  if (titleText.includes("summer") || titleText.includes("winter")) return "seasonal-deal";
+  if (titleText.includes("all inclusive")) return "all-inclusive";
+  if (titleText.includes("family")) return "family-deal";
+  if (titleText.includes("city")) return "city-break";
+  if (text.includes("free child")) return "free-child-place";
+  if (text.includes("deposit")) return "deposit";
+  if (text.includes("pay monthly")) return "payment-plan";
+  if (text.includes("promo") || text.includes("code") || readJet2PromoCode(rawText)) return "promo-code";
+  if (text.includes("discount") || readJet2DiscountText(text)) return "discount";
+  if (text.includes("single parent")) return "single-parent";
+  if (text.includes("solo")) return "solo-traveller";
+
+  return "holiday-deal";
 }
 
 export function parseJet2SmartSearchLivePrices(

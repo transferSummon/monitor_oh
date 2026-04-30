@@ -1,17 +1,265 @@
-import { absoluteUrl, canonicalUrl, normalizeText, uniqueBy } from "../core/normalizers";
-import type { LivePriceRecord } from "../core/types";
-import { parsePromotionAnchors } from "./common";
+import { load } from "cheerio";
+
+import { absoluteUrl, canonicalUrl, extractPrice, normalizeText, truncate, uniqueBy } from "../core/normalizers";
+import type { LivePriceRecord, PromotionRecord } from "../core/types";
 
 const tuiOrigin = "https://www.tui.co.uk";
 
 export function parseTuiPromotions(html: string, baseUrl: string, collectedAt: string) {
-  return parsePromotionAnchors(html, {
-    competitor: "tui",
-    baseUrl,
-    collectedAt,
-    selectorHint: "a[href*='/deals']",
-    linkFilter: (href, text) => (href.includes("/deals") || href.includes("/holidays")) && text.length > 5,
+  return parseTuiDestinationDealsMarketing(html, baseUrl, collectedAt);
+}
+
+export function parseTuiDestinationDealsMarketing(html: string, baseUrl: string, collectedAt: string) {
+  const $ = load(html);
+  const records: PromotionRecord[] = [];
+
+  $(".media-banner").each((_, element) => {
+    const banner = $(element);
+    const title = readCleanText(banner.find(".text-box__title h1, .text-box__title h2, .text-box__title h3").first());
+    const subtitle = readCleanText(banner.find(".text-box__subtitle").first());
+    const href = banner.find("a.text-box__button[href], a.card__link[href], a[href]").first().attr("href");
+
+    if (!title) return;
+
+    records.push(buildTuiPromotionRecord({
+      title,
+      subtitle,
+      priceText: readTuiPriceText(`${title} ${subtitle ?? ""}`),
+      destinationText: inferTuiDestination(title),
+      sourceUrl: readTuiSourceUrl(href, baseUrl),
+      finalUrl: baseUrl,
+      imageUrl: readTuiMarketingImageUrl(banner),
+      offerType: "hero-destination-deal",
+      selector: ".media-banner",
+      collectedAt,
+    }));
   });
+
+  $(".cards--article").each((_, sectionElement) => {
+    const section = $(sectionElement);
+    const sectionTitle = readCleanText(section.find(".cards__title h2").first());
+
+    section.find(".card.article-card").each((__, cardElement) => {
+      const card = $(cardElement);
+      const title = readCleanText(card.find(".text-box__title h3, h3").first());
+      const subtitle = readCleanText(card.find(".text-box__description").first());
+      const href = card.find("a.card__link[href], a[href]").first().attr("href");
+      const cardText = readCleanText(card) ?? "";
+
+      if (!title) return;
+
+      records.push(buildTuiPromotionRecord({
+        title,
+        subtitle,
+        priceText: readTuiPriceText(card.find(".article-card__price").first().text()) ?? readTuiPriceText(cardText),
+        destinationText: inferTuiDestination(title),
+        sourceUrl: readTuiSourceUrl(href, baseUrl),
+        finalUrl: baseUrl,
+        imageUrl: readTuiMarketingImageUrl(card),
+        offerType: classifyTuiOffer(sectionTitle, title, cardText),
+        selector: ".cards--article .card.article-card",
+        collectedAt,
+      }));
+    });
+  });
+
+  $(".cards--icon .card.icon-card").each((_, element) => {
+    const card = $(element);
+    const title = readCleanText(card.find(".text-box__title h3, h3").first());
+    const subtitle = readCleanText(card.find(".text-box__description").first());
+    const href = card.find("a.card__link[href], a[href]").first().attr("href");
+
+    if (!title) return;
+
+    records.push(buildTuiPromotionRecord({
+      title,
+      subtitle,
+      priceText: null,
+      destinationText: null,
+      sourceUrl: readTuiSourceUrl(href, baseUrl),
+      finalUrl: baseUrl,
+      imageUrl: readTuiMarketingImageUrl(card),
+      offerType: "holiday-type-deal",
+      selector: ".cards--icon .card.icon-card",
+      collectedAt,
+    }));
+  });
+
+  $("section.multi-product-tabs").each((_, sectionElement) => {
+    const section = $(sectionElement);
+    const sectionTitle = readCleanText(section.find("h2").first());
+
+    section.find(".tabs__content").each((__, panelElement) => {
+      const panel = $(panelElement);
+      const title = normalizeText(panel.attr("data-tabname")) || readCleanText(panel.find("h3,h4").first());
+      const href = panel.find(".button-container a[href], a.button[href]").first().attr("href");
+      const subtitle = sectionTitle ? `View more ${sectionTitle.toLowerCase()}` : "View more deals";
+
+      if (!title || !href) return;
+
+      records.push(buildTuiPromotionRecord({
+        title,
+        subtitle,
+        priceText: null,
+        destinationText: null,
+        sourceUrl: readTuiSourceUrl(href, baseUrl),
+        finalUrl: baseUrl,
+        imageUrl: null,
+        offerType: "haul-deal",
+        selector: "section.multi-product-tabs .tabs__content",
+        collectedAt,
+      }));
+    });
+  });
+
+  $(".cards--gradient-navigation .gradient-navigation-card").each((_, element) => {
+    const card = $(element);
+    const title = readBudgetTitle(card.find(".text-box__title").first().text());
+    const subtitle = readCleanText(card.find(".text-box__subtitle").first());
+    const href = card.find("a.card__link[href], a[href]").first().attr("href");
+    const cardText = `${title ?? ""} ${subtitle ?? ""}`;
+
+    if (!title) return;
+
+    records.push(buildTuiPromotionRecord({
+      title,
+      subtitle,
+      priceText: readTuiPriceText(cardText),
+      destinationText: null,
+      sourceUrl: readTuiSourceUrl(href, baseUrl),
+      finalUrl: baseUrl,
+      imageUrl: readTuiMarketingImageUrl(card),
+      offerType: "budget-deal",
+      selector: ".cards--gradient-navigation .gradient-navigation-card",
+      collectedAt,
+    }));
+  });
+
+  return uniqueBy(records, (record) => `${record.title}|${record.sourceUrl}`);
+}
+
+interface TextSelection {
+  clone(): {
+    find(selector: string): { remove(): void };
+    text(): string;
+  };
+}
+
+interface ImageSelection {
+  find(selector: string): { first(): { attr(name: string): string | undefined } };
+}
+
+interface TuiPromotionInput {
+  title: string;
+  subtitle: string | null;
+  priceText: string | null;
+  destinationText: string | null;
+  sourceUrl: string | null;
+  finalUrl: string;
+  imageUrl: string | null;
+  offerType: string;
+  selector: string;
+  collectedAt: string;
+}
+
+function buildTuiPromotionRecord(input: TuiPromotionInput): PromotionRecord {
+  return {
+    kind: "promotion",
+    competitor: "tui",
+    title: input.title,
+    subtitle: input.subtitle,
+    priceText: input.priceText,
+    discountText: null,
+    destinationText: input.destinationText,
+    sourceUrl: input.sourceUrl,
+    imageUrl: input.imageUrl,
+    offerType: input.offerType,
+    promoCode: null,
+    validityText: null,
+    collectedAt: input.collectedAt,
+    evidence: {
+      sourceUrl: input.sourceUrl ?? input.finalUrl,
+      finalUrl: input.finalUrl,
+      rawHtmlPath: null,
+      screenshotPath: null,
+      selector: input.selector,
+    },
+  };
+}
+
+function readCleanText(selection: TextSelection) {
+  const clone = selection.clone();
+  clone.find("script,style,svg,noscript,template,button,.u-hide-visually").remove();
+
+  return normalizeText(clone.text()) || null;
+}
+
+function readTuiSourceUrl(href: string | null | undefined, baseUrl: string) {
+  const url = canonicalUrl(href, tuiOrigin) ?? absoluteUrl(href, tuiOrigin) ?? canonicalUrl(href, baseUrl) ?? absoluteUrl(href, baseUrl);
+
+  if (!url) return null;
+
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.delete("vlid");
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function readTuiMarketingImageUrl(selection: ImageSelection) {
+  const src =
+    selection.find("img[src]").first().attr("src") ??
+    selection.find("source[srcset]").first().attr("srcset")?.split(",")[0]?.trim().split(/\s+/)[0];
+
+  return canonicalUrl(src, tuiOrigin) ?? absoluteUrl(src, tuiOrigin);
+}
+
+function readTuiPriceText(text: string | null | undefined) {
+  const normalized = normalizeText(text);
+  const price =
+    normalized.match(/prices?\s+from\s+£\s?\d[\d,]*/i)?.[0] ??
+    normalized.match(/under\s*£\s?\d[\d,]*\s*pp/i)?.[0] ??
+    extractPrice(normalized);
+
+  return price ? normalizeTuiPriceText(price) : null;
+}
+
+function readBudgetTitle(text: string | null | undefined) {
+  const normalized = normalizeText(text);
+  const match = normalized.match(/under\s*£\s?\d[\d,]*\s*pp/i)?.[0];
+
+  return match ? normalizeTuiPriceText(match) : normalized || null;
+}
+
+function normalizeTuiPriceText(text: string) {
+  return normalizeText(text)
+    .replace(/^under\s*£/i, "Under £")
+    .replace(/\s+pp\b/i, "pp");
+}
+
+function inferTuiDestination(title: string) {
+  const cleaned = normalizeText(
+    title
+      .replace(/\b(?:holiday|holidays|deal|deals)\b/gi, "")
+      .replace(/\bmake it the\b/gi, "")
+      .replace(/\bthis (?:summer|winter)\b/gi, ""),
+  );
+
+  return cleaned || null;
+}
+
+function classifyTuiOffer(sectionTitle: string | null, title: string, text: string) {
+  const section = normalizeText(sectionTitle).toLowerCase();
+  const combined = `${title} ${text}`.toLowerCase();
+
+  if (section.includes("top destinations")) return "destination-deal";
+  if (section.includes("unforgettable")) return "trip-deal";
+  if (combined.includes("disney") || combined.includes("universal")) return "theme-park-deal";
+  if (combined.includes("lapland")) return "seasonal-deal";
+
+  return "destination-deal";
 }
 
 export function parseTuiProductCardsLivePrices(
