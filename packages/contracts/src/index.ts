@@ -50,6 +50,18 @@ export interface AdRecord {
   snapshotDate: string | null;
   imageUrl: string | null;
   videoUrl: string | null;
+  regions?: unknown;
+  media: {
+    image: {
+      url: string;
+      width: number | null;
+      height: number | null;
+    } | null;
+    video: {
+      previewUrl: string | null;
+      previewImageUrl: string | null;
+    } | null;
+  };
   transparencyUrl: string | null;
   metadata: Record<string, unknown> | null;
 }

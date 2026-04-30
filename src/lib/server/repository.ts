@@ -22,6 +22,7 @@ import {
   paginate,
   sortByField,
 } from "./demo-store";
+import { extractAdImageMedia, extractAdVideoMedia } from "./ad-media";
 
 function toInt(value: string | null | undefined, fallback: number) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -65,6 +66,39 @@ function toFilterValue(searchParams: URLSearchParams, key: string) {
 
   const single = searchParams.get(key);
   return single && single.trim() ? single : null;
+}
+
+function timestampMs(value: unknown) {
+  if (value instanceof Date) return value.getTime();
+
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value).getTime();
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  return null;
+}
+
+export function isAdVisibleForLatestRun(input: {
+  status: string | null;
+  latestJobRunId: string | null;
+  latestJobStartedAt: unknown;
+  observedRunId: string | null;
+  latestSnapshotCreatedAt: unknown;
+}) {
+  if (input.status === "removed") return true;
+  if (!input.latestJobRunId) return true;
+  if (input.observedRunId && input.observedRunId === input.latestJobRunId) return true;
+  if (input.observedRunId) return false;
+
+  const snapshotCreatedAt = timestampMs(input.latestSnapshotCreatedAt);
+  const latestJobStartedAt = timestampMs(input.latestJobStartedAt);
+
+  return Boolean(
+    snapshotCreatedAt !== null &&
+      latestJobStartedAt !== null &&
+      snapshotCreatedAt >= latestJobStartedAt,
+  );
 }
 
 export async function listCompetitors(): Promise<CompetitorDto[]> {
@@ -172,13 +206,25 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
       FROM ad_status s
       ORDER BY s.ad_id, s.updated_at DESC
     ),
+    latest_successful_ads_jobs AS (
+      SELECT DISTINCT ON (jr.competitor_id)
+        jr.competitor_id,
+        jr.run_id,
+        jr.started_at
+      FROM job_runs jr
+      WHERE jr.job_type = 'ads_sync'
+        AND jr.status = 'success'
+      ORDER BY jr.competitor_id, jr.started_at DESC
+    ),
     latest_snapshots AS (
       SELECT DISTINCT ON (snap.ad_id)
         snap.ad_id,
         snap.snapshot_date,
+        snap.regions,
         snap.image,
         snap.videos,
-        snap.metadata
+        snap.metadata,
+        snap.created_at
       FROM ad_snapshots snap
       ORDER BY snap.ad_id, snap.created_at DESC
     )
@@ -199,13 +245,18 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
       ls.changed_date,
       ls.became_removed_date,
       snap.snapshot_date,
+      snap.regions,
       snap.image,
       snap.videos,
       snap.metadata,
+      snap.created_at AS snapshot_created_at,
+      latest_job.run_id AS latest_ads_run_id,
+      latest_job.started_at AS latest_ads_run_started_at,
       a.advertiser_id
     FROM ads a
     LEFT JOIN latest_status ls ON ls.ad_id = a.id
     LEFT JOIN latest_snapshots snap ON snap.ad_id = a.id
+    LEFT JOIN latest_successful_ads_jobs latest_job ON latest_job.competitor_id = a.competitor_id
     LEFT JOIN ai_classification ai ON ai.ad_id = a.id
     LEFT JOIN destinations d ON d.id = ai.destination_id
     LEFT JOIN competitors c ON c.id = a.competitor_id
@@ -213,6 +264,15 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
       AND (${competitorId}::text IS NULL OR a.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
       AND (${destinationId}::text IS NULL OR ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
       AND (${search}::text IS NULL OR a.creative_id ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
+      AND (
+        ls.status = 'removed'
+        OR latest_job.run_id IS NULL
+        OR snap.metadata->>'observed_run_id' = latest_job.run_id
+        OR (
+          snap.metadata->>'observed_run_id' IS NULL
+          AND snap.created_at >= latest_job.started_at
+        )
+      )
     ORDER BY a.created_at DESC
     LIMIT ${limit}
     OFFSET ${(page - 1) * limit}
@@ -224,48 +284,88 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
         s.status
       FROM ad_status s
       ORDER BY s.ad_id, s.updated_at DESC
+    ),
+    latest_successful_ads_jobs AS (
+      SELECT DISTINCT ON (jr.competitor_id)
+        jr.competitor_id,
+        jr.run_id,
+        jr.started_at
+      FROM job_runs jr
+      WHERE jr.job_type = 'ads_sync'
+        AND jr.status = 'success'
+      ORDER BY jr.competitor_id, jr.started_at DESC
+    ),
+    latest_snapshots AS (
+      SELECT DISTINCT ON (snap.ad_id)
+        snap.ad_id,
+        snap.metadata,
+        snap.created_at
+      FROM ad_snapshots snap
+      ORDER BY snap.ad_id, snap.created_at DESC
     )
     SELECT COUNT(*)::int AS count
     FROM ads a
     LEFT JOIN latest_status ls ON ls.ad_id = a.id
+    LEFT JOIN latest_snapshots snap ON snap.ad_id = a.id
+    LEFT JOIN latest_successful_ads_jobs latest_job ON latest_job.competitor_id = a.competitor_id
     LEFT JOIN ai_classification ai ON ai.ad_id = a.id
     LEFT JOIN competitors c ON c.id = a.competitor_id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
       AND (${competitorId}::text IS NULL OR a.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
       AND (${destinationId}::text IS NULL OR ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
       AND (${search}::text IS NULL OR a.creative_id ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
+      AND (
+        ls.status = 'removed'
+        OR latest_job.run_id IS NULL
+        OR snap.metadata->>'observed_run_id' = latest_job.run_id
+        OR (
+          snap.metadata->>'observed_run_id' IS NULL
+          AND snap.created_at >= latest_job.started_at
+        )
+      )
   `);
   const total = Number(totalRows[0]?.count ?? 0);
 
   return {
-    ads: rows.map((row) => ({
-      id: Number(row.id),
-      creativeId: String(row.creative_id),
-      competitorId: Number(row.competitor_id),
-      competitorName: String(row.competitor_name ?? ""),
-      destinationId: row.destination_id ? Number(row.destination_id) : null,
-      destinationName: row.destination_name ? String(row.destination_name) : null,
-      destinationCountry: row.destination_country ? String(row.destination_country) : null,
-      format: row.media_format ? String(row.media_format) : null,
-      firstSeenGlobal: toIsoString(row.first_seen_global),
-      lastSeenGlobal: toIsoString(row.last_seen_global),
-      status: toLifecycleStatus(row.status),
-      statusUpdatedAt: toIsoString(row.status_updated_at),
-      becameNewDate: row.became_new_date ? String(row.became_new_date) : null,
-      changedDate: row.changed_date ? String(row.changed_date) : null,
-      becameRemovedDate: row.became_removed_date ? String(row.became_removed_date) : null,
-      snapshotDate: row.snapshot_date ? String(row.snapshot_date) : null,
-      imageUrl: typeof row.image === "string" ? row.image : null,
-      videoUrl: typeof row.videos === "string" ? row.videos : null,
-      transparencyUrl:
-        row.advertiser_id && row.creative_id
-          ? `https://adstransparency.google.com/advertiser/${row.advertiser_id}/creative/${row.creative_id}?region=GB`
-          : null,
-      metadata:
+    ads: rows.map((row) => {
+      const metadata =
         row.metadata && typeof row.metadata === "object"
           ? (row.metadata as Record<string, unknown>)
-          : null,
-    })),
+          : null;
+      const imageMedia = extractAdImageMedia(row.image, metadata);
+      const videoMedia = extractAdVideoMedia(row.videos, metadata);
+
+      return {
+        id: Number(row.id),
+        creativeId: String(row.creative_id),
+        competitorId: Number(row.competitor_id),
+        competitorName: String(row.competitor_name ?? ""),
+        destinationId: row.destination_id ? Number(row.destination_id) : null,
+        destinationName: row.destination_name ? String(row.destination_name) : null,
+        destinationCountry: row.destination_country ? String(row.destination_country) : null,
+        format: row.media_format ? String(row.media_format) : null,
+        firstSeenGlobal: toIsoString(row.first_seen_global),
+        lastSeenGlobal: toIsoString(row.last_seen_global),
+        status: toLifecycleStatus(row.status),
+        statusUpdatedAt: toIsoString(row.status_updated_at),
+        becameNewDate: row.became_new_date ? String(row.became_new_date) : null,
+        changedDate: row.changed_date ? String(row.changed_date) : null,
+        becameRemovedDate: row.became_removed_date ? String(row.became_removed_date) : null,
+        snapshotDate: row.snapshot_date ? String(row.snapshot_date) : null,
+        imageUrl: imageMedia?.url ?? videoMedia?.previewImageUrl ?? null,
+        videoUrl: videoMedia?.previewUrl ?? null,
+        regions: row.regions ?? null,
+        media: {
+          image: imageMedia,
+          video: videoMedia,
+        },
+        transparencyUrl:
+          row.advertiser_id && row.creative_id
+            ? `https://adstransparency.google.com/advertiser/${row.advertiser_id}/creative/${row.creative_id}?region=GB`
+            : null,
+        metadata,
+      };
+    }),
     pagination: {
       total,
       page,
@@ -315,6 +415,24 @@ export async function getAdsSummary(searchParams: URLSearchParams = new URLSearc
         s.status
       FROM ad_status s
       ORDER BY s.ad_id, s.updated_at DESC
+    ),
+    latest_successful_ads_jobs AS (
+      SELECT DISTINCT ON (jr.competitor_id)
+        jr.competitor_id,
+        jr.run_id,
+        jr.started_at
+      FROM job_runs jr
+      WHERE jr.job_type = 'ads_sync'
+        AND jr.status = 'success'
+      ORDER BY jr.competitor_id, jr.started_at DESC
+    ),
+    latest_snapshots AS (
+      SELECT DISTINCT ON (snap.ad_id)
+        snap.ad_id,
+        snap.metadata,
+        snap.created_at
+      FROM ad_snapshots snap
+      ORDER BY snap.ad_id, snap.created_at DESC
     )
     SELECT
       COUNT(*)::int AS "totalAds",
@@ -324,12 +442,23 @@ export async function getAdsSummary(searchParams: URLSearchParams = new URLSearc
       COUNT(*) FILTER (WHERE status = 'changed')::int AS "changedAds"
     FROM latest_status ls
     JOIN ads a ON a.id = ls.ad_id
+    LEFT JOIN latest_snapshots snap ON snap.ad_id = a.id
+    LEFT JOIN latest_successful_ads_jobs latest_job ON latest_job.competitor_id = a.competitor_id
     LEFT JOIN ai_classification ai ON ai.ad_id = a.id
     LEFT JOIN competitors c ON c.id = a.competitor_id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
       AND (${competitorId}::text IS NULL OR a.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
       AND (${destinationId}::text IS NULL OR ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
       AND (${search}::text IS NULL OR a.creative_id ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
+      AND (
+        ls.status = 'removed'
+        OR latest_job.run_id IS NULL
+        OR snap.metadata->>'observed_run_id' = latest_job.run_id
+        OR (
+          snap.metadata->>'observed_run_id' IS NULL
+          AND snap.created_at >= latest_job.started_at
+        )
+      )
   `);
 
   return {

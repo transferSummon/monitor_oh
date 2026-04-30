@@ -73,6 +73,15 @@ const mapRaw = (ad: Record<string, unknown>): CreativeRecord => {
     (ad.media as { images?: unknown } | undefined)?.images ?? ad.images,
     (ad.media as { videos?: unknown } | undefined)?.videos ?? ad.videos,
   );
+  const mediaObject = ad.media && typeof ad.media === "object" ? (ad.media as Record<string, unknown>) : null;
+  const mediaImage =
+    mediaObject?.image && typeof mediaObject.image === "object"
+      ? (mediaObject.image as CreativeRecord["media"]["image"])
+      : null;
+  const mediaVideo =
+    mediaObject?.video && typeof mediaObject.video === "object"
+      ? (mediaObject.video as CreativeRecord["media"]["video"])
+      : null;
 
   const advertiserId = typeof ad.advertiser_id === "string" ? ad.advertiser_id : null;
   const creativeId = typeof ad.creative_id === "string" ? ad.creative_id : "";
@@ -115,7 +124,11 @@ const mapRaw = (ad: Record<string, unknown>): CreativeRecord => {
         : typeof ad.media_format === "string"
           ? ad.media_format
           : null,
-    media,
+    media: {
+      ...media,
+      image: mediaImage,
+      video: mediaVideo,
+    },
     first_seen:
       typeof ad.first_seen === "string"
         ? ad.first_seen

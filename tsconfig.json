@@ -28,6 +28,7 @@
     "node_modules",
     "packages",
     "runs",
+    "tests",
     "wwt_uk_monitor(for refernce)"
   ]
 }

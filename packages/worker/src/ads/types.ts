@@ -38,6 +38,9 @@ export interface NormalizedAdRecord {
   firstShown: string | null;
   lastShown: string | null;
   ocrText: string | null;
+  ocrAttempted: boolean;
+  ocrSourceUrl: string | null;
+  ocrError: string | null;
   destinationId: number | null;
   destinationName: string | null;
   destinationCountry: string | null;

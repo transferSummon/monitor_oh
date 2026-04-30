@@ -118,6 +118,265 @@ function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function asText(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function asNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function getRawPreviewImage(metadata: Record<string, unknown> | null) {
+  return asRecord(asRecord(metadata?.raw)?.preview_image);
+}
+
+function getPreviewImageUrl(image: unknown, metadata: Record<string, unknown> | null) {
+  return asText(asRecord(image)?.url) ?? asText(getRawPreviewImage(metadata)?.url);
+}
+
+function getVideoPreviewUrl(videos: unknown, metadata: Record<string, unknown> | null) {
+  const video = asRecord(videos);
+  const raw = asRecord(metadata?.raw);
+  return asText(video?.preview_url) ?? asText(video?.previewUrl) ?? asText(raw?.preview_url);
+}
+
+export interface StableAdSnapshotHashInput {
+  advertiserId: string | null;
+  advertiserTitle: string | null;
+  creativeId: string | null;
+  format: string | null;
+  transparencyUrl: string | null;
+  verified: boolean;
+  previewImageUrl: string | null;
+  previewImageHeight: number | null;
+  previewImageWidth: number | null;
+  previewUrl: string | null;
+  target: string | null;
+}
+
+export interface StoredAdSnapshotHashInput {
+  creativeId: string | null;
+  advertiserId: string | null;
+  mediaFormat: string | null;
+  image: unknown;
+  videos: unknown;
+  metadata: unknown;
+}
+
+export function createStableAdSnapshotHash(input: StableAdSnapshotHashInput) {
+  return hashValue(
+    JSON.stringify({
+      advertiserId: input.advertiserId,
+      advertiserTitle: input.advertiserTitle,
+      creativeId: input.creativeId,
+      format: input.format,
+      transparencyUrl: input.transparencyUrl,
+      verified: input.verified,
+      previewImageUrl: input.previewImageUrl,
+      previewImageHeight: input.previewImageHeight,
+      previewImageWidth: input.previewImageWidth,
+      previewUrl: input.previewUrl,
+      target: input.target,
+    }),
+  );
+}
+
+export function createStableAdSnapshotHashFromStored(input: StoredAdSnapshotHashInput) {
+  const metadata = asRecord(input.metadata);
+  const raw = asRecord(metadata?.raw);
+  const image = asRecord(input.image);
+  const rawPreviewImage = getRawPreviewImage(metadata);
+
+  return createStableAdSnapshotHash({
+    advertiserId: asText(input.advertiserId) ?? asText(raw?.advertiser_id),
+    advertiserTitle: asText(metadata?.advertiser_title) ?? asText(raw?.title),
+    creativeId: asText(input.creativeId) ?? asText(raw?.creative_id),
+    format: asText(input.mediaFormat) ?? asText(raw?.format),
+    transparencyUrl: asText(metadata?.transparency_url) ?? asText(raw?.url),
+    verified: typeof metadata?.verified === "boolean" ? metadata.verified : Boolean(raw?.verified),
+    previewImageUrl: asText(image?.url) ?? asText(rawPreviewImage?.url),
+    previewImageHeight: asNumber(image?.height) ?? asNumber(rawPreviewImage?.height),
+    previewImageWidth: asNumber(image?.width) ?? asNumber(rawPreviewImage?.width),
+    previewUrl: getVideoPreviewUrl(input.videos, metadata),
+    target: asText(metadata?.target),
+  });
+}
+
+export function getAdPersistChangeType(input: {
+  exists: boolean;
+  previousStatus?: string | null;
+  previousStableHash?: string | null;
+  nextStableHash: string;
+}) {
+  if (!input.exists) return "new" as const;
+  if (input.previousStatus === "removed") return "changed" as const;
+  if ((input.previousStableHash ?? "") !== input.nextStableHash) return "changed" as const;
+  return null;
+}
+
+export function getGoogleShownDate(value: string | null | undefined) {
+  if (!value) return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  return todayDate(date);
+}
+
+export function isGoogleAdShownOnRunDate(lastShown: string | null | undefined, runDate: string) {
+  const googleShownDate = getGoogleShownDate(lastShown);
+  return !googleShownDate || googleShownDate >= runDate;
+}
+
+function addDays(dateKey: string, days: number) {
+  const date = new Date(`${dateKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return todayDate(date);
+}
+
+function dateKeyOrNull(value: unknown) {
+  if (value instanceof Date) return todayDate(value);
+
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return todayDate(parsed);
+  }
+
+  return null;
+}
+
+function isInsideLifecycleWindow(value: unknown, runDate: string) {
+  const dateKey = dateKeyOrNull(value);
+  return Boolean(dateKey && dateKey > addDays(runDate, -7));
+}
+
+export function getRestoredAdStatus(input: {
+  becameNewDate: unknown;
+  changedDate: unknown;
+  runDate: string;
+}) {
+  if (isInsideLifecycleWindow(input.changedDate, input.runDate)) return "changed" as const;
+  if (isInsideLifecycleWindow(input.becameNewDate, input.runDate)) return "new" as const;
+  return "active" as const;
+}
+
+export function isConfirmedRemovedSnapshot(input: {
+  becameRemovedDate: unknown;
+  latestSnapshotDate: unknown;
+  latestRawLastShown: unknown;
+}) {
+  const removedDate = dateKeyOrNull(input.becameRemovedDate);
+  const snapshotDate = dateKeyOrNull(input.latestSnapshotDate);
+  const lastShownDate = dateKeyOrNull(input.latestRawLastShown);
+
+  return Boolean(removedDate && snapshotDate === removedDate && lastShownDate && lastShownDate < removedDate);
+}
+
+export function decideRemovedStatusRepair(input: {
+  status: string | null;
+  becameNewDate: unknown;
+  changedDate: unknown;
+  becameRemovedDate: unknown;
+  latestSnapshotDate: unknown;
+  latestRawLastShown: unknown;
+  runDate: string;
+}) {
+  if (input.status !== "removed") return { action: "preserve", reason: "not_removed" } as const;
+  if (
+    isConfirmedRemovedSnapshot({
+      becameRemovedDate: input.becameRemovedDate,
+      latestSnapshotDate: input.latestSnapshotDate,
+      latestRawLastShown: input.latestRawLastShown,
+    })
+  ) {
+    return { action: "preserve", reason: "confirmed_removed" } as const;
+  }
+
+  return {
+    action: "restore",
+    status: getRestoredAdStatus({
+      becameNewDate: input.becameNewDate,
+      changedDate: input.changedDate,
+      runDate: input.runDate,
+    }),
+  } as const;
+}
+
+export function getReturnedAdLifecycleAction(input: {
+  exists: boolean;
+  previousStatus?: string | null;
+  previousStableHash?: string | null;
+  nextStableHash: string;
+  isCurrentlyShown: boolean;
+}) {
+  if (!input.exists) return input.isCurrentlyShown ? ("new" as const) : ("removed" as const);
+  if (!input.isCurrentlyShown) return input.previousStatus === "removed" ? null : ("removed" as const);
+
+  return getAdPersistChangeType({
+    exists: true,
+    previousStatus: input.previousStatus,
+    previousStableHash: input.previousStableHash,
+    nextStableHash: input.nextStableHash,
+  });
+}
+
+export function decideAdStatusRepair(input: {
+  status: string | null;
+  becameRemovedDate: unknown;
+  hasPreviousSnapshot: boolean;
+  latestStableHash: string | null;
+  previousStableHash: string | null;
+  shouldBeNew: boolean;
+}) {
+  if (input.status !== "changed") return { action: "preserve", reason: "not_changed" } as const;
+  if (input.becameRemovedDate) return { action: "preserve", reason: "reappeared_removed" } as const;
+  if (!input.hasPreviousSnapshot) return { action: "preserve", reason: "no_previous_snapshot" } as const;
+  if (!input.latestStableHash || !input.previousStableHash || input.latestStableHash !== input.previousStableHash) {
+    return { action: "preserve", reason: "different_stable_hash" } as const;
+  }
+
+  return { action: "repair", status: input.shouldBeNew ? "new" : "active" } as const;
+}
+
+function buildAdClassificationText(input: {
+  advertiserTitle?: string | null;
+  target?: string | null;
+  transparencyUrl?: string | null;
+  previewUrl?: string | null;
+  previewImageUrl?: string | null;
+  metadata?: Record<string, unknown> | null;
+  image?: unknown;
+  videos?: unknown;
+  ocrText?: string | null;
+}) {
+  const metadata = input.metadata ?? null;
+  const raw = asRecord(metadata?.raw);
+
+  return [
+    input.advertiserTitle,
+    input.target,
+    input.transparencyUrl,
+    input.previewUrl,
+    input.previewImageUrl,
+    input.ocrText,
+    asText(metadata?.advertiser_title),
+    asText(metadata?.target),
+    asText(metadata?.transparency_url),
+    asText(metadata?.ocr_text),
+    asText(raw?.title),
+    asText(raw?.url),
+    asText(raw?.preview_url),
+    getPreviewImageUrl(input.image, metadata),
+    getVideoPreviewUrl(input.videos, metadata),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function normalizeUrl(value: string | null | undefined) {
   if (!value) return null;
 
@@ -138,7 +397,7 @@ function normalizeUrl(value: string | null | undefined) {
   }
 }
 
-function matchDestinationId(text: string, competitorId: number) {
+export function matchDestinationId(text: string, competitorId: number) {
   const haystack = normalizeText(text);
 
   if (!haystack) return null;
@@ -171,6 +430,10 @@ function matchDestinationId(text: string, competitorId: number) {
 
 function todayDate(value = new Date()) {
   return value.toISOString().slice(0, 10);
+}
+
+function dateKeyFromUnknown(value: unknown, fallback = new Date()) {
+  return dateKeyOrNull(value) ?? todayDate(fallback);
 }
 
 function toIsoString(value: string | null | undefined) {
@@ -1130,31 +1393,39 @@ async function enrichAdsWithClassification(
   let ocrCount = 0;
 
   for (const record of records) {
-    const baseText = [
-      record.advertiserTitle,
-      record.target,
-      record.transparencyUrl,
-      record.previewUrl,
-    ]
-      .filter(Boolean)
-      .join(" ");
+    const baseText = buildAdClassificationText({
+      advertiserTitle: record.advertiserTitle,
+      target: record.target,
+      transparencyUrl: record.transparencyUrl,
+      previewUrl: record.previewUrl,
+      previewImageUrl: record.previewImageUrl,
+    });
 
     let ocrText: string | null = null;
+    let ocrAttempted = false;
+    let ocrError: string | null = null;
+    const ocrSourceUrl = record.previewImageUrl;
     let destinationId = matchDestinationId(baseText, competitorId);
     let confidenceScore = destinationId ? 0.45 : null;
+    const hasOcrCapacity = settings.ocrMaxPerCompetitor <= 0 || ocrCount < settings.ocrMaxPerCompetitor;
 
     if (
       settings.ocrEnabled &&
       !destinationId &&
       record.previewImageUrl &&
-      ocrCount < settings.ocrMaxPerCompetitor
+      hasOcrCapacity
     ) {
       ocrCount += 1;
+      ocrAttempted = true;
 
       try {
-        ocrText = await extractTextFromImage(record.previewImageUrl, record.creativeId);
-      } catch {
+        ocrText = await extractTextFromImage(record.previewImageUrl, `${record.creativeId}:${record.previewImageUrl}`);
+        if (!ocrText) {
+          ocrError = "no_text_detected";
+        }
+      } catch (error) {
         ocrText = null;
+        ocrError = error instanceof Error ? error.message : "Unknown OCR error.";
       }
 
       const classifiedFromOcr = matchDestinationId([baseText, ocrText].filter(Boolean).join(" "), competitorId);
@@ -1165,23 +1436,19 @@ async function enrichAdsWithClassification(
     }
 
     const destination = destinationId ? destinationSeed.find((item) => item.id === destinationId) ?? null : null;
-    const snapshotHash = hashValue(
-      JSON.stringify({
-        advertiserId: record.advertiserId,
-        advertiserTitle: record.advertiserTitle,
-        creativeId: record.creativeId,
-        format: record.format,
-        transparencyUrl: record.transparencyUrl,
-        verified: record.verified,
-        previewImageUrl: record.previewImageUrl,
-        previewImageHeight: record.previewImageHeight,
-        previewImageWidth: record.previewImageWidth,
-        previewUrl: record.previewUrl,
-        firstShown: record.firstShown,
-        lastShown: record.lastShown,
-        target: record.target,
-      }),
-    );
+    const snapshotHash = createStableAdSnapshotHash({
+      advertiserId: record.advertiserId,
+      advertiserTitle: record.advertiserTitle,
+      creativeId: record.creativeId,
+      format: record.format,
+      transparencyUrl: record.transparencyUrl,
+      verified: record.verified,
+      previewImageUrl: record.previewImageUrl,
+      previewImageHeight: record.previewImageHeight,
+      previewImageWidth: record.previewImageWidth,
+      previewUrl: record.previewUrl,
+      target: record.target,
+    });
 
     normalized.push({
       competitorSlug: competitor.slug as CompetitorSlug,
@@ -1201,6 +1468,9 @@ async function enrichAdsWithClassification(
       firstShown: record.firstShown,
       lastShown: record.lastShown,
       ocrText,
+      ocrAttempted,
+      ocrSourceUrl,
+      ocrError,
       destinationId,
       destinationName: destination?.name ?? null,
       destinationCountry: destination?.country ?? null,
@@ -1247,25 +1517,431 @@ async function upsertAdClassification(
   `);
 }
 
-async function persistAdRecord(record: NormalizedAdRecord) {
+export async function backfillAdClassifications(options: { ocrMissing?: boolean; limit?: number | null } = {}) {
+  if (!hasDatabase()) {
+    return {
+      ok: false,
+      processed: 0,
+      classified: 0,
+      ocrAttempted: 0,
+      ocrFailed: 0,
+      message: "DATABASE_URL is required for ads backfill.",
+    };
+  }
+
+  const db = getDb();
+  if (!db) {
+    return {
+      ok: false,
+      processed: 0,
+      classified: 0,
+      ocrAttempted: 0,
+      ocrFailed: 0,
+      message: "Database client is unavailable.",
+    };
+  }
+
+  const limit = options.limit && options.limit > 0 ? options.limit : 10000;
+  const rows = await db.execute(sql<{
+    ad_id: number;
+    competitor_id: number;
+    creative_id: string;
+    advertiser_id: string | null;
+    media_format: string | null;
+    snapshot_id: number;
+    image: unknown;
+    videos: unknown;
+    metadata: unknown;
+  }>`
+    WITH latest_snapshots AS (
+      SELECT DISTINCT ON (snap.ad_id)
+        snap.id,
+        snap.ad_id,
+        snap.image,
+        snap.videos,
+        snap.metadata
+      FROM ad_snapshots snap
+      ORDER BY snap.ad_id, snap.created_at DESC
+    )
+    SELECT
+      a.id AS ad_id,
+      a.competitor_id,
+      a.creative_id,
+      a.advertiser_id,
+      a.media_format,
+      snap.id AS snapshot_id,
+      snap.image,
+      snap.videos,
+      snap.metadata
+    FROM ads a
+    INNER JOIN latest_snapshots snap ON snap.ad_id = a.id
+    ORDER BY a.id DESC
+    LIMIT ${limit}
+  `);
+
+  let classified = 0;
+  let ocrAttempted = 0;
+  let ocrFailed = 0;
+
+  try {
+    for (const row of rows) {
+      const metadata = asRecord(row.metadata) ?? {};
+      const existingOcrText = asText(metadata.ocr_text);
+      const previewImageUrl = getPreviewImageUrl(row.image, metadata);
+      let ocrText = existingOcrText;
+      let updatedMetadata: Record<string, unknown> | null = null;
+
+      if (options.ocrMissing && !ocrText && previewImageUrl) {
+        ocrAttempted += 1;
+        updatedMetadata = {
+          ...metadata,
+          ocr_attempted: true,
+          ocr_source_url: previewImageUrl,
+        };
+
+        try {
+          ocrText = await extractTextFromImage(previewImageUrl, `${row.creative_id}:${previewImageUrl}`);
+          updatedMetadata.ocr_text = ocrText;
+          updatedMetadata.ocr_error = ocrText ? null : "no_text_detected";
+          if (!ocrText) {
+            ocrFailed += 1;
+          }
+        } catch (error) {
+          ocrText = null;
+          ocrFailed += 1;
+          updatedMetadata.ocr_text = null;
+          updatedMetadata.ocr_error = error instanceof Error ? error.message : "Unknown OCR error.";
+        }
+
+        await db.execute(sql`
+          UPDATE ad_snapshots
+          SET metadata = ${JSON.stringify(updatedMetadata)}::jsonb
+          WHERE id = ${row.snapshot_id}
+        `);
+      }
+
+      const destinationId = matchDestinationId(
+        buildAdClassificationText({
+          advertiserTitle: asText(metadata.advertiser_title),
+          target: asText(metadata.target),
+          transparencyUrl: asText(metadata.transparency_url),
+          previewImageUrl,
+          metadata: updatedMetadata ?? metadata,
+          image: row.image,
+          videos: row.videos,
+          ocrText,
+        }),
+        Number(row.competitor_id),
+      );
+
+      const confidenceScore = destinationId ? (ocrText ? 0.82 : 0.45) : null;
+      await upsertAdClassification(Number(row.ad_id), destinationId, confidenceScore);
+
+      if (destinationId) {
+        classified += 1;
+      }
+    }
+  } finally {
+    if (options.ocrMissing) {
+      await shutdownOcr();
+    }
+  }
+
+  return {
+    ok: true,
+    processed: rows.length,
+    classified,
+    ocrAttempted,
+    ocrFailed,
+    message: `Ads backfill processed ${rows.length} ads and classified ${classified}.`,
+  };
+}
+
+export async function repairAdStatuses(options: { apply?: boolean } = {}) {
+  if (!hasDatabase()) {
+    return {
+      ok: false,
+      apply: Boolean(options.apply),
+      message: "DATABASE_URL is required to repair ad statuses.",
+    };
+  }
+
+  const db = getDb();
+  if (!db) {
+    return {
+      ok: false,
+      apply: Boolean(options.apply),
+      message: "Database client is not available.",
+    };
+  }
+
+  const apply = Boolean(options.apply);
+  const runDate = todayDate();
+  const snapshotRows = await db.execute(sql<{
+    snapshot_id: number;
+    ad_id: number;
+    creative_id: string | null;
+    advertiser_id: string | null;
+    media_format: string | null;
+    image: unknown;
+    videos: unknown;
+    metadata: unknown;
+    snapshot_hash: string | null;
+    snapshot_date: Date | string;
+    created_at: Date | string;
+  }>`
+    SELECT
+      snap.id AS snapshot_id,
+      snap.ad_id,
+      a.creative_id,
+      a.advertiser_id,
+      a.media_format,
+      snap.image,
+      snap.videos,
+      snap.metadata,
+      snap.snapshot_hash,
+      snap.snapshot_date,
+      snap.created_at
+    FROM ad_snapshots snap
+    JOIN ads a ON a.id = snap.ad_id
+    ORDER BY snap.ad_id, snap.created_at DESC
+  `);
+
+  const snapshotsByAd = new Map<
+    number,
+    Array<{
+      snapshotId: number;
+      stableHash: string;
+      storedHash: string | null;
+      metadata: unknown;
+      snapshotDate: unknown;
+      createdAt: unknown;
+    }>
+  >();
+  let snapshotsNeedingHashUpdate = 0;
+
+  for (const row of snapshotRows) {
+    const stableHash = createStableAdSnapshotHashFromStored({
+      creativeId: asText(row.creative_id),
+      advertiserId: asText(row.advertiser_id),
+      mediaFormat: asText(row.media_format),
+      image: row.image,
+      videos: row.videos,
+      metadata: row.metadata,
+    });
+    const storedHash = row.snapshot_hash ? String(row.snapshot_hash) : null;
+
+    if (storedHash !== stableHash) {
+      snapshotsNeedingHashUpdate += 1;
+      if (apply) {
+        await db.execute(sql`
+          UPDATE ad_snapshots
+          SET snapshot_hash = ${stableHash}
+          WHERE id = ${Number(row.snapshot_id)}
+        `);
+      }
+    }
+
+    const adId = Number(row.ad_id);
+    const snapshots = snapshotsByAd.get(adId) ?? [];
+    snapshots.push({
+      snapshotId: Number(row.snapshot_id),
+      stableHash,
+      storedHash,
+      metadata: row.metadata,
+      snapshotDate: row.snapshot_date,
+      createdAt: row.created_at,
+    });
+    snapshotsByAd.set(adId, snapshots);
+  }
+
+  const statusRows = await db.execute(sql<{
+    ad_id: number;
+    status: string | null;
+    became_removed_date: Date | string | null;
+    should_be_new: boolean | null;
+  }>`
+    SELECT
+      ad_id,
+      status,
+      became_removed_date,
+      (became_new_date > CURRENT_DATE - INTERVAL '7 days') AS should_be_new
+    FROM ad_status
+    WHERE status = 'changed'
+  `);
+
+  const preserved = {
+    differentStableHash: 0,
+    reappearedRemoved: 0,
+    noPreviousSnapshot: 0,
+    notChanged: 0,
+  };
+  let repairedToNew = 0;
+  let repairedToActive = 0;
+
+  for (const row of statusRows) {
+    const snapshots = snapshotsByAd.get(Number(row.ad_id)) ?? [];
+    const latest = snapshots[0] ?? null;
+    const previous = snapshots[1] ?? null;
+    const decision = decideAdStatusRepair({
+      status: asText(row.status),
+      becameRemovedDate: row.became_removed_date,
+      hasPreviousSnapshot: Boolean(previous),
+      latestStableHash: latest?.stableHash ?? null,
+      previousStableHash: previous?.stableHash ?? null,
+      shouldBeNew: Boolean(row.should_be_new),
+    });
+
+    if (decision.action === "repair") {
+      if (decision.status === "new") {
+        repairedToNew += 1;
+      } else {
+        repairedToActive += 1;
+      }
+
+      if (apply) {
+        await db.execute(sql`
+          UPDATE ad_status
+          SET status = ${decision.status}::lifecycle_status,
+              changed_date = NULL,
+              updated_at = NOW()
+          WHERE ad_id = ${Number(row.ad_id)}
+        `);
+      }
+
+      continue;
+    }
+
+    if (decision.reason === "different_stable_hash") preserved.differentStableHash += 1;
+    if (decision.reason === "reappeared_removed") preserved.reappearedRemoved += 1;
+    if (decision.reason === "no_previous_snapshot") preserved.noPreviousSnapshot += 1;
+    if (decision.reason === "not_changed") preserved.notChanged += 1;
+  }
+
+  const removedRows = await db.execute(sql<{
+    ad_id: number;
+    status: string | null;
+    became_new_date: Date | string | null;
+    changed_date: Date | string | null;
+    became_removed_date: Date | string | null;
+    created_at: Date | string;
+  }>`
+    SELECT
+      a.id AS ad_id,
+      s.status,
+      s.became_new_date,
+      s.changed_date,
+      s.became_removed_date,
+      a.created_at
+    FROM ads a
+    JOIN ad_status s ON s.ad_id = a.id
+    WHERE s.status = 'removed'
+  `);
+
+  let confirmedRemovedPreserved = 0;
+  let unconfirmedRemovedRestored = 0;
+  let restoredRemovedToNew = 0;
+  let restoredRemovedToActive = 0;
+  let restoredRemovedToChanged = 0;
+
+  for (const row of removedRows) {
+    const latest = snapshotsByAd.get(Number(row.ad_id))?.[0] ?? null;
+    const metadata = asRecord(latest?.metadata);
+    const raw = asRecord(metadata?.raw);
+    const decision = decideRemovedStatusRepair({
+      status: asText(row.status),
+      becameNewDate: row.became_new_date,
+      changedDate: row.changed_date,
+      becameRemovedDate: row.became_removed_date,
+      latestSnapshotDate: latest?.snapshotDate ?? null,
+      latestRawLastShown: raw?.last_shown,
+      runDate,
+    });
+
+    if (decision.action === "preserve") {
+      if (decision.reason === "confirmed_removed") {
+        confirmedRemovedPreserved += 1;
+      }
+      continue;
+    }
+
+    unconfirmedRemovedRestored += 1;
+    if (decision.status === "new") restoredRemovedToNew += 1;
+    if (decision.status === "active") restoredRemovedToActive += 1;
+    if (decision.status === "changed") restoredRemovedToChanged += 1;
+
+    if (apply) {
+      const becameNewDate = dateKeyOrNull(row.became_new_date) ?? dateKeyFromUnknown(row.created_at);
+      const changedDate = decision.status === "changed" ? (dateKeyOrNull(row.changed_date) ?? runDate) : null;
+
+      await db.execute(sql`
+        UPDATE ad_status
+        SET status = ${decision.status}::lifecycle_status,
+            became_new_date = ${becameNewDate},
+            became_removed_date = NULL,
+            changed_date = ${changedDate},
+            updated_at = NOW()
+        WHERE ad_id = ${Number(row.ad_id)}
+      `);
+    }
+  }
+
+  return {
+    ok: true,
+    apply,
+    runDate,
+    snapshotsChecked: snapshotRows.length,
+    snapshotsRehashed: snapshotsNeedingHashUpdate,
+    changedStatusesChecked: statusRows.length,
+    statusesRepaired: repairedToNew + repairedToActive,
+    repairedToNew,
+    repairedToActive,
+    preserved,
+    removedStatusesChecked: removedRows.length,
+    confirmedRemovedPreserved,
+    unconfirmedRemovedRestored,
+    restoredRemovedToNew,
+    restoredRemovedToActive,
+    restoredRemovedToChanged,
+    message: apply
+      ? `Ad status repair applied: ${snapshotsNeedingHashUpdate} snapshot hashes updated, ${repairedToNew + repairedToActive} changed statuses repaired, ${unconfirmedRemovedRestored} unconfirmed removals restored.`
+      : `Ad status repair dry run: ${snapshotsNeedingHashUpdate} snapshot hashes would update, ${repairedToNew + repairedToActive} changed statuses would repair, ${unconfirmedRemovedRestored} unconfirmed removals would restore.`,
+  };
+}
+
+async function persistAdRecord(
+  record: NormalizedAdRecord,
+  options: { runDate?: string; isCurrentlyShown?: boolean; observedRunId?: string | null } = {},
+) {
   const db = getDb();
   if (!db) {
     return { adId: null, changeType: null as string | null };
   }
 
-  const snapshotDate = todayDate(new Date(record.lastShown ?? new Date().toISOString()));
+  const snapshotDate = options.runDate ?? todayDate();
+  const isCurrentlyShown = options.isCurrentlyShown ?? isGoogleAdShownOnRunDate(record.lastShown, snapshotDate);
   const existing = await db.execute(sql<{
     id: number;
-    snapshot_hash: string | null;
+    creative_id: string | null;
+    advertiser_id: string | null;
+    media_format: string | null;
+    image: unknown;
+    videos: unknown;
+    metadata: unknown;
     status: string | null;
   }>`
     SELECT
       a.id,
-      snap.snapshot_hash,
+      a.creative_id,
+      a.advertiser_id,
+      a.media_format,
+      snap.image,
+      snap.videos,
+      snap.metadata,
       s.status
     FROM ads a
     LEFT JOIN LATERAL (
-      SELECT snapshot_hash
+      SELECT image, videos, metadata
       FROM ad_snapshots
       WHERE ad_id = a.id
       ORDER BY created_at DESC
@@ -1296,7 +1972,11 @@ async function persistAdRecord(record: NormalizedAdRecord) {
     target: record.target,
     verified: record.verified,
     ocr_text: record.ocrText,
+    ocr_attempted: record.ocrAttempted,
+    ocr_source_url: record.ocrSourceUrl,
+    ocr_error: record.ocrError,
     transparency_url: record.transparencyUrl,
+    observed_run_id: options.observedRunId ?? null,
     raw: record.rawData,
   };
 
@@ -1341,19 +2021,47 @@ async function persistAdRecord(record: NormalizedAdRecord) {
           snapshot_hash = EXCLUDED.snapshot_hash,
           created_at = NOW()
     `);
+    const initialStatus = getReturnedAdLifecycleAction({
+      exists: false,
+      nextStableHash: record.snapshotHash,
+      isCurrentlyShown,
+    });
+
     await db.execute(sql`
       INSERT INTO ad_status (ad_id, status, became_new_date, updated_at)
-      VALUES (${adId}, 'new', ${snapshotDate}, NOW())
+      VALUES (${adId}, ${initialStatus}::lifecycle_status, ${snapshotDate}, NOW())
     `);
+    if (initialStatus === "removed") {
+      await db.execute(sql`
+        UPDATE ad_status
+        SET became_removed_date = ${snapshotDate}
+        WHERE ad_id = ${adId}
+      `);
+    }
     await upsertAdClassification(adId, record.destinationId, record.confidenceScore);
 
-    return { adId, changeType: "new" as const };
+    return { adId, changeType: initialStatus };
   }
 
   const adId = Number(existing[0]?.id ?? 0);
-  const previousHash = String(existing[0]?.snapshot_hash ?? "");
+  const previousHash = existing[0]
+    ? createStableAdSnapshotHashFromStored({
+        creativeId: asText(existing[0].creative_id),
+        advertiserId: asText(existing[0].advertiser_id),
+        mediaFormat: asText(existing[0].media_format),
+        image: existing[0].image,
+        videos: existing[0].videos,
+        metadata: existing[0].metadata,
+      })
+    : "";
   const previousStatus = String(existing[0]?.status ?? "active");
-  const changed = previousHash !== record.snapshotHash || previousStatus === "removed";
+  const changeType = getReturnedAdLifecycleAction({
+    exists: true,
+    previousStatus,
+    previousStableHash: previousHash,
+    nextStableHash: record.snapshotHash,
+    isCurrentlyShown,
+  });
 
   await db.execute(sql`
     UPDATE ads
@@ -1388,7 +2096,18 @@ async function persistAdRecord(record: NormalizedAdRecord) {
   `);
   await upsertAdClassification(adId, record.destinationId, record.confidenceScore);
 
-  if (changed) {
+  if (changeType === "removed") {
+    await db.execute(sql`
+      UPDATE ad_status
+      SET status = 'removed',
+          became_removed_date = ${snapshotDate},
+          updated_at = NOW()
+      WHERE ad_id = ${adId}
+    `);
+    return { adId, changeType: "removed" as const };
+  }
+
+  if (changeType === "changed") {
     await db.execute(sql`
       UPDATE ad_status
       SET status = 'changed',
@@ -1408,37 +2127,7 @@ async function persistAdRecord(record: NormalizedAdRecord) {
   return { adId, changeType: null };
 }
 
-async function markRemovedAds(competitorId: number, seenAdIds: number[]) {
-  if (!hasDatabase()) return 0;
-
-  const db = getDb();
-  if (!db) return 0;
-
-  const rows = await db.execute(sql<{ ad_id: number }>`
-    SELECT a.id AS ad_id
-    FROM ads a
-    LEFT JOIN ad_status s ON s.ad_id = a.id
-    WHERE a.competitor_id = ${competitorId}
-      AND COALESCE(s.status, 'active') <> 'removed'
-  `);
-
-  const removableRows = rows.filter((row) => !seenAdIds.includes(Number(row.ad_id)));
-  const removedDate = todayDate();
-
-  for (const row of removableRows) {
-    await db.execute(sql`
-      UPDATE ad_status
-      SET status = 'removed',
-          became_removed_date = ${removedDate},
-          updated_at = NOW()
-      WHERE ad_id = ${Number(row.ad_id)}
-    `);
-  }
-
-  return removableRows.length;
-}
-
-async function ageAdStatuses() {
+async function ageAdStatuses(runDate = todayDate()) {
   if (!hasDatabase()) return;
 
   const db = getDb();
@@ -1449,7 +2138,7 @@ async function ageAdStatuses() {
     SET status = 'active',
         updated_at = NOW()
     WHERE status IN ('new', 'changed')
-      AND COALESCE(changed_date, became_new_date) <= CURRENT_DATE - INTERVAL '7 days'
+      AND COALESCE(changed_date, became_new_date) <= ${runDate}::date - INTERVAL '7 days'
   `);
 }
 
@@ -1474,6 +2163,7 @@ async function runAdsJob(competitorSlug?: string, options?: WorkerRunOptions): P
   const settings = getAdsSettings();
   const slugs = competitorSlug ? [competitorSlug as CompetitorSlug] : competitorSeed.map((item) => item.slug as CompetitorSlug);
   const runId = `ads-${Date.now()}`;
+  const runDate = todayDate();
   const artifactResults: AdsArtifactResult[] = [];
   let totalSeen = 0;
   let totalChanged = 0;
@@ -1586,23 +2276,19 @@ async function runAdsJob(competitorSlug?: string, options?: WorkerRunOptions): P
         let changedCount = 0;
 
         if (hasDatabase()) {
-          const seenAdIds: number[] = [];
-
           for (const record of competitorResult.records) {
-            const persisted = await persistAdRecord(record);
-            if (persisted.adId) {
-              seenAdIds.push(persisted.adId);
-            }
+            const isCurrentlyShown = isGoogleAdShownOnRunDate(record.lastShown, runDate);
+            const persisted = await persistAdRecord(record, {
+              runDate,
+              isCurrentlyShown,
+              observedRunId: competitorRunId,
+            });
             if (persisted.changeType) {
               changedCount += 1;
             }
           }
 
-          if (competitorResult.hardFailures === 0) {
-            changedCount += await markRemovedAds(competitor.id, seenAdIds);
-          }
-
-          await ageAdStatuses();
+          await ageAdStatuses(runDate);
         }
 
         totalSeen += competitorResult.records.length;

@@ -22,7 +22,7 @@ const parseRegionsFromUnknown = (value: unknown): string[] => {
         if (typeof item === "string") return item;
         if (item && typeof item === "object") {
           const obj = item as Record<string, unknown>;
-          const candidate = obj.code ?? obj.value ?? obj.name;
+          const candidate = obj.location_name ?? obj.country ?? obj.region ?? obj.code ?? obj.value ?? obj.name;
           return typeof candidate === "string" ? candidate : null;
         }
         return null;
@@ -33,8 +33,13 @@ const parseRegionsFromUnknown = (value: unknown): string[] => {
   if (typeof value === "object") {
     const obj = value as Record<string, unknown>;
     if (Array.isArray(obj.regions)) return parseRegionsFromUnknown(obj.regions);
+    if (typeof obj.location_name === "string") return [obj.location_name];
+    if (typeof obj.country === "string") return [obj.country];
+    if (typeof obj.region === "string") return [obj.region];
     if (Array.isArray(obj.code)) return parseRegionsFromUnknown(obj.code);
     if (typeof obj.code === "string") return [obj.code];
+    if (typeof obj.value === "string") return [obj.value];
+    if (typeof obj.name === "string") return [obj.name];
   }
 
   return [];
@@ -48,6 +53,9 @@ export const formatRegions = (ad: CreativeRecord): string => {
     ?.ad_information?.regions;
   const fromMetadata = parseRegionsFromUnknown(metadataRegions);
   if (fromMetadata.length > 0) return fromMetadata.join(", ");
+
+  const legacyMetadataRegions = parseRegionsFromUnknown(ad.metadata?.regions);
+  if (legacyMetadataRegions.length > 0) return legacyMetadataRegions.join(", ");
 
   return ad.region ?? "Unknown";
 };
@@ -65,12 +73,25 @@ export const getImageFromAd = (ad: CreativeRecord): string | null => {
     return ad.image;
   }
 
+  const mediaImage = ad.media?.image?.url;
+  if (typeof mediaImage === "string" && mediaImage.trim().length > 0) {
+    return mediaImage;
+  }
+
   const variationImage = (
     ad.metadata as { variations?: Array<{ image?: unknown }> } | null
   )?.variations?.[0]?.image;
 
   if (typeof variationImage === "string" && variationImage.trim().length > 0) {
     return variationImage;
+  }
+
+  const rawPreviewImage = (
+    ad.metadata as { raw?: { preview_image?: { url?: unknown } } } | null
+  )?.raw?.preview_image?.url;
+
+  if (typeof rawPreviewImage === "string" && rawPreviewImage.trim().length > 0) {
+    return rawPreviewImage;
   }
 
   return null;
@@ -104,7 +125,13 @@ export const getVideoUrlsFromAd = (ad: CreativeRecord): string[] => {
   if (singleVideo.length > 0) return singleVideo;
 
   if (Array.isArray(ad.media?.videos)) {
-    return ad.media.videos.filter((item): item is string => typeof item === "string");
+    const mediaVideos = ad.media.videos.filter((item): item is string => typeof item === "string");
+    if (mediaVideos.length > 0) return mediaVideos;
+  }
+
+  const mediaPreviewUrl = ad.media?.video?.previewUrl;
+  if (typeof mediaPreviewUrl === "string" && mediaPreviewUrl.trim().length > 0) {
+    return [mediaPreviewUrl];
   }
 
   return [];

@@ -4,9 +4,11 @@ import type { CompetitorModule, JobRunResponse, JobRunStatus } from "@olympic/co
 import { closeDb, hasDatabase } from "@olympic/db";
 
 import {
+  backfillAdClassifications,
   createBatchRunId,
   finishJobBatch,
   inspectLatestBatch,
+  repairAdStatuses,
   runRequestedJob,
   startJobBatch,
   type WorkerLogEvent,
@@ -19,6 +21,8 @@ function usage() {
     "Usage:",
     "  worker run --module offers|marketing|ads [--competitor <slug>] [--batch-run-id <id>] [--json-logs]",
     "  worker run-all [--modules offers,marketing,ads]",
+    "  worker backfill-ads [--ocr-missing] [--limit <count>]",
+    "  worker repair-ad-statuses --dry-run|--apply",
     "  worker inspect --latest",
   ].join("\n");
 }
@@ -270,6 +274,40 @@ async function inspect(args: string[]) {
   }
 }
 
+async function backfillAds(args: string[]) {
+  const limitValue = getFlag(args, "--limit");
+  const parsedLimit = Number.parseInt(limitValue ?? "", 10);
+  const result = await backfillAdClassifications({
+    ocrMissing: hasFlag(args, "--ocr-missing"),
+    limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : null,
+  });
+
+  console.log(JSON.stringify(result, null, 2));
+
+  if (!result.ok) {
+    process.exitCode = 1;
+  }
+}
+
+async function repairAds(args: string[]) {
+  const apply = hasFlag(args, "--apply");
+  const dryRun = hasFlag(args, "--dry-run");
+
+  if (apply === dryRun) {
+    console.error("Use exactly one of --dry-run or --apply.");
+    console.error(usage());
+    process.exitCode = 1;
+    return;
+  }
+
+  const result = await repairAdStatuses({ apply });
+  console.log(JSON.stringify(result, null, 2));
+
+  if (!result.ok) {
+    process.exitCode = 1;
+  }
+}
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
 
@@ -279,6 +317,12 @@ async function main() {
       return;
     case "run-all":
       await runAll(rest);
+      return;
+    case "backfill-ads":
+      await backfillAds(rest);
+      return;
+    case "repair-ad-statuses":
+      await repairAds(rest);
       return;
     case "inspect":
       await inspect(rest);

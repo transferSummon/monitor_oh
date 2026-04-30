@@ -60,6 +60,15 @@ export function AdCard({ ad, type }: AdCardProps) {
   const youtubeVideo = videoUrls.find((url) => isYouTube(url));
   const youtubeId = youtubeVideo ? extractYouTubeId(youtubeVideo) : null;
   const mp4Video = videoUrls.find((url) => isMp4(url) || isVideoCdn(url));
+  const externalVideoPreview = !youtubeId && !mp4Video ? videoUrls[0] : null;
+  const emptyPreviewLabel =
+    ad.format === "video"
+      ? "Video preview opens on Google Ads Transparency"
+      : ad.format === "image" || ad.format === "text"
+        ? "No image preview available"
+        : "No creative preview available";
+  const externalPreviewLabel =
+    ad.format === "video" ? "Video preview is available externally." : "Creative preview is available externally.";
 
   const typeStyles = {
     all: "border-l-4 border-l-primary",
@@ -97,25 +106,25 @@ export function AdCard({ ad, type }: AdCardProps) {
 
         {ad.became_new_date ? (
           <div className="text-sm text-muted-foreground">
-            New since: <span className="text-card-foreground">{fmt(ad.became_new_date)}</span>
+            First detected: <span className="text-card-foreground">{fmt(ad.became_new_date)}</span>
           </div>
         ) : null}
 
         {ad.changed_date ? (
           <div className="text-sm text-muted-foreground">
-            Last modified: <span className="text-card-foreground">{fmt(ad.changed_date)}</span>
+            Change detected: <span className="text-card-foreground">{fmt(ad.changed_date)}</span>
           </div>
         ) : null}
 
         {ad.became_removed_date ? (
           <div className="text-sm text-muted-foreground">
-            Removed on: <span className="text-card-foreground">{fmt(ad.became_removed_date)}</span>
+            Removal detected: <span className="text-card-foreground">{fmt(ad.became_removed_date)}</span>
           </div>
         ) : null}
 
         {ad.last_seen_global ? (
           <div className="text-sm text-muted-foreground">
-            Last seen: <span className="text-card-foreground">{fmt(ad.last_seen_global)}</span>
+            Last shown: <span className="text-card-foreground">{fmt(ad.last_seen_global)}</span>
           </div>
         ) : null}
 
@@ -141,8 +150,18 @@ export function AdCard({ ad, type }: AdCardProps) {
                 loading="lazy"
               />
             </a>
+          ) : externalVideoPreview ? (
+            <div className="flex min-h-[120px] flex-col items-center justify-center gap-3 p-4 text-center">
+              <p className="text-sm text-muted-foreground">{externalPreviewLabel}</p>
+              <Button variant="outline" size="sm" asChild>
+                <a href={externalVideoPreview} target="_blank" rel="noopener noreferrer">
+                  <ExternalLink className="mr-2 h-4 w-4" />
+                  Open preview
+                </a>
+              </Button>
+            </div>
           ) : (
-            <p className="p-3 text-sm text-muted-foreground">No video preview available</p>
+            <p className="p-3 text-sm text-muted-foreground">{emptyPreviewLabel}</p>
           )}
         </div>
 

@@ -30,6 +30,15 @@ export interface CreativeRecord {
   media: {
     images: unknown[];
     videos: unknown[];
+    image?: {
+      url: string;
+      width: number | null;
+      height: number | null;
+    } | null;
+    video?: {
+      previewUrl: string | null;
+      previewImageUrl: string | null;
+    } | null;
   };
   first_seen: string | null;
   last_seen: string | null;

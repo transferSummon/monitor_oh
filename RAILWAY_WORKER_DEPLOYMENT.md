@@ -22,7 +22,7 @@ DATAFORSEO_GOOGLE_LOCATION_NAME=United Kingdom
 DATAFORSEO_GOOGLE_PLATFORM=all
 DATAFORSEO_ADS_DEPTH=120
 ADS_OCR_ENABLED=true
-ADS_OCR_MAX_PER_COMPETITOR=10
+ADS_OCR_MAX_PER_COMPETITOR=0
 ```
 
 Use the existing Railway Postgres connection string for `DATABASE_URL`, or reference the Railway Postgres service variable if the worker is in the same Railway project.
@@ -56,6 +56,13 @@ For one competitor only:
 ```bash
 npm run worker -- run --module offers --competitor ionian-island-holidays
 npm run worker -- run --module ads --competitor tui
+```
+
+To reclassify existing ad snapshots after destination keyword updates:
+
+```bash
+npm run worker -- backfill-ads
+npm run worker -- backfill-ads --ocr-missing
 ```
 
 ## Separate Cron Services

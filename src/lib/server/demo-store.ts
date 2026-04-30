@@ -61,6 +61,8 @@ interface AdsArtifactSummary {
       transparencyUrl: string;
       format: string;
       previewImageUrl: string | null;
+      previewImageWidth?: number | null;
+      previewImageHeight?: number | null;
       firstShown: string | null;
       lastShown: string | null;
       destinationId: number | null;
@@ -389,6 +391,16 @@ function createAds(artifact: AdsArtifactSummary | null): { ads: AdRecord[]; summ
       snapshotDate: artifact.finishedAt.slice(0, 10),
       imageUrl: record.previewImageUrl,
       videoUrl: null,
+      media: {
+        image: record.previewImageUrl
+          ? {
+              url: record.previewImageUrl,
+              width: record.previewImageWidth ?? null,
+              height: record.previewImageHeight ?? null,
+            }
+          : null,
+        video: null,
+      },
       transparencyUrl: record.transparencyUrl,
       metadata: {
         advertiserId: record.advertiserId,

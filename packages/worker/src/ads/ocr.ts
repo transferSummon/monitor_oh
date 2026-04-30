@@ -30,7 +30,7 @@ export async function extractTextFromImage(imageUrl: string, cacheKey: string) {
 
   const response = await fetch(imageUrl);
   if (!response.ok) {
-    return null;
+    throw new Error(`Image fetch failed with HTTP ${response.status}.`);
   }
 
   const buffer = Buffer.from(await response.arrayBuffer());

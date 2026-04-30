@@ -171,6 +171,18 @@ export async function getAds(filters: AdsFilters): Promise<Snapshot> {
       snapshotDate: string | null;
       imageUrl: string | null;
       videoUrl: string | null;
+      regions?: unknown;
+      media?: {
+        image?: {
+          url: string;
+          width: number | null;
+          height: number | null;
+        } | null;
+        video?: {
+          previewUrl: string | null;
+          previewImageUrl: string | null;
+        } | null;
+      };
       transparencyUrl: string | null;
       metadata: Record<string, unknown> | null;
     }>;
@@ -193,7 +205,7 @@ export async function getAds(filters: AdsFilters): Promise<Snapshot> {
       images: ad.imageUrl ? [ad.imageUrl] : [],
       video: ad.videoUrl,
       videos: ad.videoUrl ? [ad.videoUrl] : [],
-      regions: ad.metadata?.regions ?? ad.metadata?.ad_information ?? null,
+      regions: ad.regions ?? ad.metadata?.regions ?? ad.metadata?.ad_information ?? null,
       metadata: ad.metadata,
       snapshot_date: ad.snapshotDate,
       status_updated_at: ad.statusUpdatedAt,
@@ -202,6 +214,8 @@ export async function getAds(filters: AdsFilters): Promise<Snapshot> {
       media: {
         images: ad.imageUrl ? [ad.imageUrl] : [],
         videos: ad.videoUrl ? [ad.videoUrl] : [],
+        image: ad.media?.image ?? null,
+        video: ad.media?.video ?? null,
       },
       first_seen: ad.firstSeenGlobal,
       last_seen: ad.lastSeenGlobal,
