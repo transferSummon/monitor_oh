@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getCompetitors,
   getDestinations,
+  getLivePriceCompetitorLabel,
   getModuleAnnotation,
   getOffers,
   getOffersSummary,
@@ -35,6 +36,11 @@ const fallbackSummary: AdsSummaryResponse = {
   removedAds: 0,
   changedAds: 0,
 };
+const LIVE_PRICE_PLAIN_LABEL_COMPETITORS = new Set(["Jet2 Holidays", "TUI"]);
+
+function shouldUsePlainLivePriceLabel(option: { label: string }) {
+  return LIVE_PRICE_PLAIN_LABEL_COMPETITORS.has(option.label);
+}
 
 export default function OffersPage() {
   const [activeTab, setActiveTab] = useState<StatusTab>("all");
@@ -200,9 +206,14 @@ export default function OffersPage() {
   const effectiveSummary = { ...fallbackSummary, ...(summary ?? {}) };
   const competitorAnnotations = Object.fromEntries(
     (competitorsQuery.data ?? [])
+      .filter((option) => !shouldUsePlainLivePriceLabel(option))
       .map((option) => [option.id, getModuleAnnotation(option, "offers")])
       .filter((entry): entry is [string, string] => Boolean(entry[1])),
   );
+  const livePriceCompetitors = (competitorsQuery.data ?? []).map((option) => ({
+    ...option,
+    label: shouldUsePlainLivePriceLabel(option) ? option.label : getLivePriceCompetitorLabel(option),
+  }));
 
   return (
     <div className="min-h-screen bg-background">
@@ -216,7 +227,7 @@ export default function OffersPage() {
         </div>
 
         <FilterBar
-          competitors={competitorsQuery.data ?? []}
+          competitors={livePriceCompetitors}
           destinations={destinationsQuery.data ?? []}
           selectedCompetitors={selectedCompetitors}
           selectedDestinations={selectedDestinations}

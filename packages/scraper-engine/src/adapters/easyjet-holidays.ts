@@ -1,33 +1,50 @@
 import { classifyErrorBlocker, classifyHttpBlockers, makeBlocker } from "../core/blockers";
 import { completeRunResult } from "../core/result";
-import type { BrowserDocument, CompetitorAdapter, SearchWindow } from "../core/types";
-import { parseEasyJetLivePrices, parseEasyJetPromotions } from "../parsers";
+import type { CompetitorAdapter, SearchWindow } from "../core/types";
+import { parseEasyJetPackageSearchLivePrices, parseEasyJetPromotions } from "../parsers";
 
 const dealsUrl = "https://www.easyjet.com/en/holidays/deals";
+const packageSearchUrl = "https://www.easyjet.com/holidays/_api/v1.0/search/packages";
 const categoryUrls = [
   "https://www.easyjet.com/en/holidays/deals/summer-holidays",
   "https://www.easyjet.com/en/holidays/deals/last-minute-holidays",
 ];
+const defaultLivePriceSearch = {
+  departure: "LGW",
+  geography: "GR",
+  flexibleDays: "3",
+  pageSize: "12",
+};
 
-async function attemptEasyJetSearch(document: BrowserDocument, searchWindow: SearchWindow) {
-  await document.goto("https://www.easyjet.com/en/holidays", { timeoutMs: 60_000, waitMs: 3_000 });
-  await document.acceptCookies();
+function splitAdultsAcrossRooms(adults: number, rooms: number) {
+  const adultCount = Math.max(1, adults);
+  const roomCount = Math.min(Math.max(1, rooms), adultCount);
+  const baseAdults = Math.floor(adultCount / roomCount);
+  const remainder = adultCount % roomCount;
 
-  const attemptedSelectors = [
-    () => document.click("[data-tid='searchButton']"),
-    () => document.fill("input[name*='date']", searchWindow.fromDate),
-    () => document.fill("input[placeholder*='When']", searchWindow.fromDate),
-    () => document.selectOption("select[name*='duration']", String(searchWindow.nights)),
-    () => document.click("button[type='submit']"),
-  ];
+  return Array.from({ length: roomCount }, (_, index) => Math.max(1, baseAdults + (index < remainder ? 1 : 0)));
+}
 
-  for (const attempt of attemptedSelectors) {
-    await attempt().catch(() => false);
-  }
+function buildEasyJetPackageSearchUrl(searchWindow: SearchWindow) {
+  const params = new URLSearchParams({
+    startDate: searchWindow.fromDate,
+    endDate: searchWindow.toDate,
+    duration: String(searchWindow.nights),
+    flexibleDays: defaultLivePriceSearch.flexibleDays,
+    departure: defaultLivePriceSearch.departure,
+    geography: defaultLivePriceSearch.geography,
+    automaticAllocation: "false",
+    page: "1",
+    pageSize: defaultLivePriceSearch.pageSize,
+  });
 
-  const currentUrl = await document.currentUrl();
-  const html = await document.content();
-  return { currentUrl, html };
+  splitAdultsAcrossRooms(searchWindow.adults, searchWindow.rooms).forEach((adults, index) => {
+    params.set(`room[${index}].adults`, String(adults));
+    params.set(`room[${index}].children`, "0");
+    params.set(`room[${index}].infants`, "0");
+  });
+
+  return `${packageSearchUrl}?${params.toString()}`;
 }
 
 export const easyJetHolidaysAdapter: CompetitorAdapter = {
@@ -68,54 +85,52 @@ export const easyJetHolidaysAdapter: CompetitorAdapter = {
   },
   async runLivePrices(context) {
     const notes = [
-      "easyJet live prices are browser-driven because the holidays experience is heavily client-rendered.",
+      "easyJet live prices use the structured package-search API exposed by the holidays frontend.",
+      "The API requires a geography; this monitor currently samples Greece package inventory from London Gatwick.",
     ];
+    const sourceUrl = buildEasyJetPackageSearchUrl(context.searchWindow);
 
     try {
-      const document = await context.browserPool.getDocument(context.competitor.slug);
-      let currentUrl = "https://www.easyjet.com/en/holidays";
-      let html = "";
+      const response = await context.httpClient.get(sourceUrl, {
+        headers: {
+          accept: "application/json",
+          referer: "https://www.easyjet.com/en/holidays",
+        },
+      });
+      const blockers = classifyHttpBlockers(response.status, response.html);
+      const records =
+        response.status >= 200 && response.status < 300
+          ? parseEasyJetPackageSearchLivePrices(response.html, response.finalUrl, new Date().toISOString())
+          : [];
 
-      try {
-        const attempted = await attemptEasyJetSearch(document, context.searchWindow);
-        currentUrl = attempted.currentUrl;
-        html = attempted.html;
-      } catch {
-        notes.push("The broad search flow was brittle in this session, so the adapter fell back to rendered deal pages.");
+      if (response.status < 200 || response.status >= 300) {
+        blockers.push(
+          makeBlocker(
+            "transport_error",
+            `easyJet package search returned HTTP ${response.status}.`,
+            response.html.slice(0, 500),
+          ),
+        );
       }
-
-      let records = parseEasyJetLivePrices(html, currentUrl, new Date().toISOString());
 
       if (records.length === 0) {
-        for (const url of categoryUrls) {
-          await document.goto(url, { timeoutMs: 60_000, waitMs: 3_000 });
-          html = await document.content();
-          currentUrl = await document.currentUrl();
-          records = parseEasyJetLivePrices(html, currentUrl, new Date().toISOString());
-
-          if (records.length > 0) {
-            notes.push(`Fell back to rendered category page: ${url}`);
-            break;
-          }
-        }
+        blockers.push(
+          makeBlocker("empty_results", "easyJet package-search API returned no usable hotel package offers."),
+        );
       }
-
-      const screenshot = await document.takeScreenshot();
-      const blockers = records.length === 0 ? [makeBlocker("empty_results", "easyJet rendered pages loaded, but no stable hotel price cards were extracted.")] : [];
 
       return completeRunResult(context, {
         capability: "live-prices",
-        method: "browser_html",
+        method: "http_html",
         notes,
         blockers,
         records,
-        rawHtml: html,
-        screenshot,
+        rawHtml: response.html,
       });
     } catch (error) {
       return completeRunResult(context, {
         capability: "live-prices",
-        method: "browser_html",
+        method: "http_html",
         notes,
         blockers: [classifyErrorBlocker(error)],
         records: [],

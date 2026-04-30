@@ -1,0 +1,56 @@
+{
+  "data": {
+    "getDeals": {
+      "pagination": {
+        "total": 6122,
+        "start": 1,
+        "end": 1
+      },
+      "data": [
+        {
+          "code": "975733",
+          "accommodationCode": "TUDL0159",
+          "accomStartDate": "2026-05-01",
+          "roomType": null,
+          "roomTypeCode": "DD01",
+          "packageId": "975733TUDL015917775936000001777593600000TOM29817781984000001778284800000TOM299DD018416385193/3/485/7",
+          "bookingPageUrl": "https://www.tui.co.uk/destinations/bookaccommodation?dp=t&price=pp&tab=overview&duration=7&productCode=975733&pkg=8416385193/3/485/7&bb=AI&rmtp=DD01&airports[]=BOH&noOfAdults=2&noOfChildren=0&when=01-05-2026&packageId=975733TUDL015917775936000001777593600000TOM29817781984000001778284800000TOM299DD018416385193/3/485/7&searchType=search",
+          "sourceSystem": null,
+          "label": "Platinum",
+          "boardCode": "AI",
+          "generalInfo": {
+            "resortName": "Lalila Blue Suites",
+            "country": "Turkey",
+            "destination": "Dalaman area",
+            "resort": "Marmaris",
+            "continent": "Europe"
+          },
+          "tripDetails": {
+            "date": "2026-05-01T00:00:00+01:00",
+            "duration": "7",
+            "departurePoint": "BOH",
+            "arrivalPoint": "DLM",
+            "arrivalPointName": "Dalaman",
+            "accommodationType": "All Inclusive",
+            "transportType": "",
+            "transferIncluded": false
+          },
+          "priceDetails": {
+            "price": "787.52",
+            "totalPrice": "1681.52",
+            "pricePP": "393.76",
+            "totalPricePP": "840.76"
+          },
+          "numberOfAdults": 2,
+          "numberOfChildren": 0,
+          "paxDetails": {
+            "adults": 2,
+            "children": 0,
+            "infants": 0,
+            "rooms": 1
+          }
+        }
+      ]
+    }
+  }
+}

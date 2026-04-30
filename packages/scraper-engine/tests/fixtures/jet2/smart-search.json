@@ -1,0 +1,77 @@
+{
+  "totalResults": 878,
+  "results": [
+    {
+      "property": {
+        "id": 74374,
+        "name": "Agar Apartments",
+        "resort": "Gumbet",
+        "area": "Bodrum Area",
+        "images": [
+          {
+            "title": "Agar Apartments",
+            "url": "https://media.jet2.com/is/image/jet2/BJV_74374_Agar_Apartments_0323_02"
+          }
+        ]
+      },
+      "selectedBoardTypeId": 4,
+      "selectedFlightId": 154,
+      "accommodationOptions": [
+        {
+          "boardId": 4,
+          "priceOptions": [
+            {
+              "flightId": 154,
+              "totalPrice": 620.0,
+              "pricePerPerson": 310.0,
+              "roomIds": [47316],
+              "promoCode": "SPRING2026"
+            }
+          ]
+        }
+      ],
+      "rooms": [
+        {
+          "roomTypeId": 47316,
+          "roomId": 47316,
+          "description": "One Bedroom apartment"
+        }
+      ],
+      "duration": 7,
+      "url": "/beach/turkey/bodrum-area/gumbet/agar-apartments?duration=7&airport=69&date=24-05-2026&occupancy=r2c&board=4&oflight=1324229&iflight=1324232&rooms=47316"
+    }
+  ],
+  "filters": {
+    "boardbasis": [
+      {
+        "id": 4,
+        "name": "Self Catering"
+      }
+    ]
+  },
+  "flights": [
+    {
+      "flightId": 154,
+      "outbound": {
+        "flightId": 1324229,
+        "arrivalDateTimeLocal": "2026-05-24T21:45:00",
+        "departureAirportCode": "GLA",
+        "arrivalAirportCode": "BJV",
+        "departureDateTimeLocal": "2026-05-24T15:15:00",
+        "departureAirportDisplayName": "Glasgow Intl",
+        "arrivalAirportDisplayName": "Bodrum BJV",
+        "departureAirportId": 69
+      },
+      "inbound": {
+        "flightId": 1324232,
+        "arrivalDateTimeLocal": "2026-06-01T01:10:00",
+        "departureAirportCode": "BJV",
+        "arrivalAirportCode": "GLA",
+        "departureDateTimeLocal": "2026-05-31T22:35:00",
+        "departureAirportDisplayName": "Bodrum BJV",
+        "arrivalAirportDisplayName": "Glasgow Intl",
+        "departureAirportId": 67
+      }
+    }
+  ]
+}

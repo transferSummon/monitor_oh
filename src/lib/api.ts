@@ -376,6 +376,20 @@ export function getModuleAnnotation(
   return capability.note ?? capability.state.replace("_", " ");
 }
 
+export function getLivePriceCompetitorLabel(competitor: CompetitorFilterOption): string {
+  const capability = competitor.capabilities?.find((item) => item.module === "offers");
+
+  if (capability?.state === "in_progress") {
+    return `${competitor.label} (not stable)`;
+  }
+
+  if (capability?.state === "blocked") {
+    return `${competitor.label} (not available)`;
+  }
+
+  return competitor.label;
+}
+
 export const toPaginationTotal = (value: unknown): number | undefined => {
   const total = toSafeNumber(value);
   return total > 0 ? total : undefined;

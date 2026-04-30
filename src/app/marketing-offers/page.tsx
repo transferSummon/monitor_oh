@@ -27,6 +27,12 @@ import {
 
 const PAGE_LIMIT = 50;
 const ALL_COMPETITORS_VALUE = "__all_competitors__";
+const MARKETING_COMPETITOR_ANNOTATIONS: Partial<Record<string, string>> = {
+  "1": "Currently not available",
+  "3": "Blocked by anti-bot protection",
+  "4": "Blocked by site challenge; marketing offers unavailable.",
+  "6": "Blocked by anti-bot protection; marketing offers unavailable.",
+};
 
 export default function MarketingOffersPage() {
   const [selectedCompetitor, setSelectedCompetitor] = useState<string>(ALL_COMPETITORS_VALUE);
@@ -174,20 +180,25 @@ export default function MarketingOffersPage() {
               <SelectTrigger className="w-full md:w-[240px]">
                 <SelectValue placeholder="Competitor" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="w-[min(28rem,calc(100vw-2rem))]">
                 <SelectItem value={ALL_COMPETITORS_VALUE}>All competitors</SelectItem>
-                {competitorOptions.map((option) => (
-                  <SelectItem key={option.id} value={option.id}>
-                    <div className="flex flex-col">
-                      <span>{option.label}</span>
-                      {getModuleAnnotation(option, "marketing") ? (
-                        <span className="text-xs text-muted-foreground">
-                          {getModuleAnnotation(option, "marketing")}
-                        </span>
-                      ) : null}
-                    </div>
-                  </SelectItem>
-                ))}
+                {competitorOptions.map((option) => {
+                  const annotation =
+                    MARKETING_COMPETITOR_ANNOTATIONS[option.id] ?? getModuleAnnotation(option, "marketing");
+
+                  return (
+                    <SelectItem key={option.id} value={option.id} className="items-start">
+                      <div className="flex max-w-full flex-col">
+                        <span>{option.label}</span>
+                        {annotation ? (
+                          <span className="whitespace-normal text-xs leading-snug text-muted-foreground">
+                            {annotation}
+                          </span>
+                        ) : null}
+                      </div>
+                    </SelectItem>
+                  );
+                })}
               </SelectContent>
             </Select>
           </div>

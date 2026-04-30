@@ -1,0 +1,56 @@
+{
+  "results": [
+    {
+      "prop_code": "GKCAV",
+      "sub_prop_code": "GKCAV4",
+      "prop_type": "A",
+      "departure_date": "2026-05-02",
+      "dest_code": "EFL",
+      "departure_airport": "LGW",
+      "airports": "LGW,STN,LHR",
+      "pax": 2,
+      "nights": 7,
+      "pp": 919,
+      "pp_discount": 459,
+      "is_available": true,
+      "has_offer": true,
+      "accom_pp": 329,
+      "accom_pp_discount": 199,
+      "accom_is_available": true,
+      "accom_has_offer": true,
+      "currency": "GBP",
+      "has_zero_deposit": false,
+      "accom_has_zero_deposit": false,
+      "details": {
+        "id": 4180,
+        "propertyCode": "GKCAV",
+        "heading": "Cavos Inn",
+        "summary": "Traditional family run pension with exceptional views towards the Lixouri peninsula",
+        "locationArea": "Assos",
+        "locationName": "Assos, Kefalonia",
+        "url": "https://www.ionianislandholidays.com/property/cavos-inn",
+        "title": "Cavos Inn",
+        "latitude": 38.376552,
+        "longitude": 20.540631,
+        "gallery": [
+          {
+            "src": "https://www.ionianislandholidays.com/uploads/properties/transforms/Cavos-Inn/_gallery/53103/No.6d.webp?v=1777472677",
+            "alt": "Room No.6",
+            "width": "1920",
+            "height": 1441.0786516853932
+          }
+        ],
+        "hasCarHire": true
+      }
+    }
+  ],
+  "pagination": {
+    "total_records": 116,
+    "current_page": 1,
+    "total_pages": 116,
+    "offset": 0,
+    "next_page": 2,
+    "prev_page": null
+  },
+  "facets": {}
+}

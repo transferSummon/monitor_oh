@@ -67,6 +67,17 @@ export class DefaultHttpClient implements HttpClient {
     });
   }
 
+  async postJson(url: string, body: unknown, options: HttpRequestOptions = {}) {
+    return this.request(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(options.headers ?? {}),
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
   private async request(url: string, init: RequestInit): Promise<HttpResponseData> {
     return this.limit(async () => {
       await gentleDelay();

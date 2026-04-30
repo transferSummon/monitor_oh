@@ -1,0 +1,33 @@
+{
+  "data": {
+    "getDealsInfo": {
+      "dealsInfo": [
+        {
+          "code": "975733",
+          "roomType": "Double Room",
+          "sliderData": {
+            "mainImageUrl": "https://content.tui.co.uk/adamtui/2025_7/25_10/b59ab290-4172-4966-bb04-b32500b11caf/ACC_975733_TUR_92WebOriginalCompressed.jpg",
+            "mainImageAlt": "",
+            "secondaryImagesDetails": [
+              {
+                "url": "https://content.tui.co.uk/adamtui/2019_6/24_16/3d10827b-8b60-4790-8875-aa76010a8c8d/ACC_975733_TUR_59WebOriginalCompressed.jpg",
+                "alt": "Double room with balcony"
+              }
+            ],
+            "imagesCount": 32
+          },
+          "geo": {
+            "resortId": "000455",
+            "countryId": null,
+            "destinationId": null,
+            "regionId": null,
+            "regionName": null,
+            "arrivalPort": null,
+            "ports": null
+          },
+          "productLabel": null
+        }
+      ]
+    }
+  }
+}

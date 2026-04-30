@@ -1,0 +1,92 @@
+{
+  "status": {
+    "total": 986,
+    "minPrice": 672,
+    "maxPrice": 19784,
+    "minPricePP": 336,
+    "maxPricePP": 9892,
+    "hasDiscont": true
+  },
+  "offers": [
+    {
+      "id": "0",
+      "date": "2026-06-18T00:00:00",
+      "stay": 7,
+      "price": 2909,
+      "pricePP": 1455,
+      "currency": "GBP",
+      "deposit": 120,
+      "accom": {
+        "date": "2026-06-18T00:00:00",
+        "stay": 7,
+        "id": "GRKG0007",
+        "packageId": "2325583783/2/3090/7",
+        "code": "GRKG0007",
+        "unit": [
+          {
+            "code": "DD01",
+            "price": 2909,
+            "pricePP": 1455,
+            "currency": {
+              "code": "GBP"
+            },
+            "board": "AI",
+            "boardType": {
+              "code": "AI",
+              "title": "All Inclusive",
+              "itemName": "All Inclusive"
+            },
+            "occupation": {
+              "adults": 2,
+              "children": 0,
+              "infants": 0,
+              "childAges": []
+            },
+            "accommodationId": "GRKG0007",
+            "packageId": "2325583783/2/3090/7"
+          }
+        ]
+      },
+      "hotel": {
+        "name": "Mitsis Selection Blue Domes",
+        "starRating": "5",
+        "rating": 4.4,
+        "numberOfReviews": 6654,
+        "url": "/greece/kos/kardamena/mitsis-selection-blue-domes",
+        "country": {
+          "code": "GR",
+          "name": "Greece",
+          "url": "/greece"
+        },
+        "location": {
+          "code": "GRKG",
+          "name": "Kos",
+          "url": "/greece/kos"
+        },
+        "resort": {
+          "code": "GRKGKA",
+          "name": "Kardamena",
+          "url": "/greece/kos/kardamena"
+        },
+        "images": [
+          {
+            "small": "https://ejh-web-prod-images.s3-eu-west-1.amazonaws.com/GRKG0007_Mitsis_Blue_Domes/Small/GRKG0007_03.jpg",
+            "medium": "https://ejh-web-prod-images.s3-eu-west-1.amazonaws.com/GRKG0007_Mitsis_Blue_Domes/Medium/GRKG0007_03.jpg",
+            "large": "https://ejh-web-prod-images.s3-eu-west-1.amazonaws.com/GRKG0007_Mitsis_Blue_Domes/Large/GRKG0007_03.jpg",
+            "description": "Mitsis Selection Blue Domes"
+          }
+        ]
+      },
+      "transport": {
+        "routes": [
+          {
+            "depPt": "LGW",
+            "arrPt": "KGS",
+            "depDate": "2026-06-18T14:20:00+00:00",
+            "direction": "outbound"
+          }
+        ]
+      }
+    }
+  ]
+}

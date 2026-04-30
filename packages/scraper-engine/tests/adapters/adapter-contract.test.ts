@@ -39,10 +39,10 @@ const scenarios = [
     capability: "live-prices",
     http: async () => ({
       get: {
-        "https://www.jet2holidays.com/search/results?airport=4_98_8_118_63_9_69_1_77_7_127_99_3_5&date=22-05-2026&duration=7&occupancy=r2&destination=8_43&flexi=3&sortorder=1&page=1":
+        "https://www.jet2holidays.com/api/jet2/smartsearch/search?departureAirportIds=4_98_8_118_63_9_69_1_77_7_127_99_3_5&destinationAreaIds=8_43&departureDate=2026-05-22&durations=7&occupancies=2&pageNumber=1&pageSize=24&sortOrder=1&filters=&holidayTypeId=0&flexibility=7&minPrice=&includePriceBreakDown=false&brandId=&inboundFlightId=0&outboundFlightId=0&gtmSearchType=Smart+Search&searchId=&applyDiscount=true&occupancyOpen=false&useMultiSearch=false&defaultSearchParametersUsed=false&inboundFlightTimes=&outboundFlightTimes=&flexi=3":
           {
-            html: await readFixture("jet2", "live-prices.html"),
-            finalUrl: "https://www.jet2holidays.com/search/results",
+            html: await readFixture("jet2", "smart-search.json"),
+            finalUrl: "https://www.jet2holidays.com/api/jet2/smartsearch/search",
           },
       },
     }),
@@ -71,21 +71,16 @@ const scenarios = [
     name: "easyJet live prices",
     competitor: "easyjet-holidays",
     capability: "live-prices",
-    http: async () => ({ get: {} }),
-    browser: async () => ({
-      initialUrl: "https://www.easyjet.com/en/holidays",
-      fixtures: {
-        "https://www.easyjet.com/en/holidays": {
-          html: "<html><body><h1>easyJet holidays</h1></body></html>",
-        },
-        "https://www.easyjet.com/en/holidays/deals/summer-holidays": {
-          html: await readFixture("easyjet", "live-prices.html"),
-        },
-        "https://www.easyjet.com/en/holidays/deals/last-minute-holidays": {
-          html: await readFixture("easyjet", "live-prices.html"),
-        },
+    http: async () => ({
+      get: {
+        "https://www.easyjet.com/holidays/_api/v1.0/search/packages?startDate=2026-05-22&endDate=2026-06-21&duration=7&flexibleDays=3&departure=LGW&geography=GR&automaticAllocation=false&page=1&pageSize=12&room%5B0%5D.adults=2&room%5B0%5D.children=0&room%5B0%5D.infants=0":
+          {
+            html: await readFixture("easyjet", "package-search.json"),
+            finalUrl: "https://www.easyjet.com/holidays/_api/v1.0/search/packages",
+          },
       },
     }),
+    browser: async () => ({ fixtures: {}, initialUrl: homeUrl }),
   },
   {
     name: "TUI promotions",
@@ -105,17 +100,22 @@ const scenarios = [
     name: "TUI live prices",
     competitor: "tui",
     capability: "live-prices",
-    http: async () => ({ get: {} }),
-    browser: async () => ({
-      initialUrl:
-        "https://www.tui.co.uk/destinations/deals/summer-handpicked-deals?vlid=T%7CL1%7CB1%7CAV%7CNA%7CNA%7CNO%7CNO%7CNO%7CBAU%7C546",
-      fixtures: {
-        "https://www.tui.co.uk/destinations/deals/summer-handpicked-deals?vlid=T%7CL1%7CB1%7CAV%7CNA%7CNA%7CNO%7CNO%7CNO%7CBAU%7C546":
+    http: async () => ({
+      get: {},
+      post: {
+        "https://mwa.tui.com/browse/mwa/product-cards-production/graphql": [
           {
-            html: await readFixture("tui", "live-prices.html"),
+            html: await readFixture("tui", "product-cards-get-deals.json"),
+            finalUrl: "https://mwa.tui.com/browse/mwa/product-cards-production/graphql",
           },
+          {
+            html: await readFixture("tui", "product-cards-get-deals-info.json"),
+            finalUrl: "https://mwa.tui.com/browse/mwa/product-cards-production/graphql",
+          },
+        ],
       },
     }),
+    browser: async () => ({ fixtures: {}, initialUrl: homeUrl }),
   },
   {
     name: "Sunvil promotions",
@@ -139,6 +139,20 @@ const scenarios = [
         "https://www.sunvil.co.uk/offers": {
           html: await readFixture("sunvil", "promotions.html"),
         },
+        "https://www.sunvil.co.uk/results/getpage?pageNumber=1&toFilter=false": {
+          html: await readFixture("sunvil", "results-getpage.json"),
+          finalUrl: "https://www.sunvil.co.uk/results/getpage?pageNumber=1&toFilter=false",
+        },
+        "https://www.sunvil.co.uk/booking/holiday/kalami-bay?CacheId=fixture-cache": {
+          html: await readFixture("sunvil", "booking-kalami-bay.html"),
+          finalUrl: "https://www.sunvil.co.uk/booking/holiday/kalami-bay?CacheId=fixture-cache",
+        },
+        "https://www.sunvil.co.uk/holiday/priceandavailability?code=49110&roomCode=49111&nights=7&boardCode=Self+Catering&departureAirport=LGW&adults=2&children=0&infants=0&departureDate=&returnDate=&roomFit=":
+          {
+            html: await readFixture("sunvil", "price-availability-kalami-bay.json"),
+            finalUrl:
+              "https://www.sunvil.co.uk/holiday/priceandavailability?code=49110&roomCode=49111&nights=7&boardCode=Self+Catering&departureAirport=LGW&adults=2&children=0&infants=0&departureDate=&returnDate=&roomFit=",
+          },
       },
       post: {
         "https://www.sunvil.co.uk/results/discover": {
@@ -147,14 +161,7 @@ const scenarios = [
         },
       },
     }),
-    browser: async () => ({
-      fixtures: {
-        "https://www.sunvil.co.uk/offers": {
-          html: await readFixture("sunvil", "live-prices.html"),
-        },
-      },
-      initialUrl: "https://www.sunvil.co.uk/offers",
-    }),
+    browser: async () => ({ fixtures: {}, initialUrl: homeUrl }),
   },
   {
     name: "Ionian promotions",
@@ -177,9 +184,16 @@ const scenarios = [
       get: {
         "https://www.ionianislandholidays.com/search/properties?duration=7&airport=none&refine=collections%3A84810%7Ctype%3AV%2CA":
           {
-            html: await readFixture("ionian", "live-prices.html"),
-            finalUrl: "https://www.ionianislandholidays.com/search/properties",
+            html: '<html><script>var APP_GLOBALS = {"csrfToken":"fixture-token"}</script></html>',
+            finalUrl:
+              "https://www.ionianislandholidays.com/search/properties?duration=7&airport=none&refine=collections%3A84810%7Ctype%3AV%2CA",
           },
+      },
+      post: {
+        "https://www.ionianislandholidays.com/actions/ionian/property/search": {
+          html: await readFixture("ionian", "property-search.json"),
+          finalUrl: "https://www.ionianislandholidays.com/actions/ionian/property/search",
+        },
       },
     }),
     browser: async () => ({ fixtures: {}, initialUrl: homeUrl }),

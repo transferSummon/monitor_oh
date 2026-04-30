@@ -1,0 +1,38 @@
+{
+  "status": "OK",
+  "Success": true,
+  "results": [
+    {
+      "Month": "2026/05/01",
+      "Results": [
+        {
+          "FromPrice": 619.5,
+          "DepartureDate": "2026/05/25",
+          "Rooms": "49111-2-0"
+        },
+        {
+          "FromPrice": 699.5,
+          "DepartureDate": "2026/05/18",
+          "Rooms": "49111-2-0"
+        }
+      ],
+      "LowestPrice": 619.5
+    },
+    {
+      "Month": "2026/06/01",
+      "Results": [
+        {
+          "FromPrice": 769,
+          "DepartureDate": "2026/06/01",
+          "Rooms": "49111-2-0"
+        },
+        {
+          "FromPrice": 549,
+          "DepartureDate": "2026/06/22",
+          "Rooms": "49111-2-0"
+        }
+      ],
+      "LowestPrice": 549
+    }
+  ]
+}

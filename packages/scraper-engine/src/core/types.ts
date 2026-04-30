@@ -70,6 +70,7 @@ export interface LivePriceRecord {
   priceText: string | null;
   currency: string | null;
   sourceUrl: string | null;
+  imageUrl?: string | null;
   collectedAt: string;
   evidence: RecordEvidence;
 }
@@ -118,6 +119,7 @@ export interface HttpClient {
     form: URLSearchParams | Record<string, string>,
     options?: HttpRequestOptions,
   ): Promise<HttpResponseData>;
+  postJson(url: string, body: unknown, options?: HttpRequestOptions): Promise<HttpResponseData>;
 }
 
 export interface BrowserDocument {

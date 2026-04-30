@@ -265,7 +265,7 @@ function createOffers(summary: ScrapeRunSummary | null): OfferRecord[] {
             typeof record.travelDate === "string" && record.travelDate
               ? new Date(record.travelDate).toISOString().slice(0, 10)
               : null,
-          imageUrl: null,
+          imageUrl: typeof record.imageUrl === "string" && record.imageUrl ? record.imageUrl : null,
           description: `Captured from ${competitor.name} scrape run.`,
           createdAt: String(record.collectedAt ?? summary.finishedAt),
           status: result.status === "blocked" ? "removed" : "new",

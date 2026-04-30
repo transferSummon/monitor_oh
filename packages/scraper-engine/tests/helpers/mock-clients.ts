@@ -18,6 +18,8 @@ export interface FixtureResponse {
   finalUrl?: string;
 }
 
+type FixtureEntry = FixtureResponse | FixtureResponse[];
+
 export async function readFixture(...segments: string[]) {
   const filePath = path.join(process.cwd(), "tests", "fixtures", ...segments);
   return fs.readFile(filePath, "utf8");
@@ -26,13 +28,13 @@ export async function readFixture(...segments: string[]) {
 export class FixtureHttpClient implements HttpClient {
   constructor(
     private readonly fixtures: {
-      get?: Record<string, FixtureResponse>;
-      post?: Record<string, FixtureResponse>;
+      get?: Record<string, FixtureEntry>;
+      post?: Record<string, FixtureEntry>;
     },
   ) {}
 
   async get(url: string, _options?: HttpRequestOptions): Promise<HttpResponseData> {
-    const response = this.fixtures.get?.[url];
+    const response = this.nextResponse(this.fixtures.get?.[url]);
 
     if (!response) {
       throw new Error(`Missing GET fixture for ${url}`);
@@ -52,7 +54,7 @@ export class FixtureHttpClient implements HttpClient {
     _form: URLSearchParams | Record<string, string>,
     _options?: HttpRequestOptions,
   ): Promise<HttpResponseData> {
-    const response = this.fixtures.post?.[url];
+    const response = this.nextResponse(this.fixtures.post?.[url]);
 
     if (!response) {
       throw new Error(`Missing POST fixture for ${url}`);
@@ -65,6 +67,27 @@ export class FixtureHttpClient implements HttpClient {
       html: response.html,
       headers: {},
     };
+  }
+
+  async postJson(url: string, _body: unknown, _options?: HttpRequestOptions): Promise<HttpResponseData> {
+    const response = this.nextResponse(this.fixtures.post?.[url]);
+
+    if (!response) {
+      throw new Error(`Missing POST fixture for ${url}`);
+    }
+
+    return {
+      url,
+      finalUrl: response.finalUrl ?? url,
+      status: response.status ?? 200,
+      html: response.html,
+      headers: {},
+    };
+  }
+
+  private nextResponse(entry: FixtureEntry | undefined) {
+    if (!Array.isArray(entry)) return entry;
+    return entry.shift();
   }
 }
 
