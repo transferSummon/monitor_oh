@@ -61,11 +61,23 @@ export const formatRegions = (ad: CreativeRecord): string => {
 };
 
 export const formatDestination = (ad: CreativeRecord): string => {
+  if (ad.destinations && ad.destinations.length > 0) {
+    return ad.destinations.map((destination) => destination.name).join(", ");
+  }
+
   const name =
     typeof ad.destination_name === "string" && ad.destination_name.trim().length > 0
       ? ad.destination_name
       : "Unknown";
   return ad.destination_country ? `${name} (${ad.destination_country})` : name;
+};
+
+export const getDestinationLabels = (ad: CreativeRecord): string[] => {
+  if (ad.destinations && ad.destinations.length > 0) {
+    return ad.destinations.map((destination) => destination.name);
+  }
+
+  return [formatDestination(ad)];
 };
 
 export const getImageFromAd = (ad: CreativeRecord): string | null => {

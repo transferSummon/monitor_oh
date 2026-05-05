@@ -14,6 +14,16 @@ export interface CreativeRecord {
   destination_id?: string | null;
   destination_name?: string | null;
   destination_country?: string | null;
+  destinations?: Array<{
+    id: number;
+    name: string;
+    country: string;
+    slug: string | null;
+    parentId: number | null;
+    destinationType: string;
+    role: "primary" | "matched" | "rollup";
+    confidenceScore: number | null;
+  }>;
   title: string | null;
   snippet: string | null;
   url: string | null;

@@ -33,6 +33,7 @@ export interface AdsSummaryResponse {
   newAds: number;
   activeAds: number;
   removedAds: number;
+  removedAdsLast7Days?: number;
   changedAds: number;
 }
 
@@ -57,6 +58,7 @@ export interface OfferRecord {
   destination_name: string;
   destination_country: string;
   destination_id: number;
+  destinations: DestinationAssignment[];
 }
 
 export interface OffersResponse {
@@ -90,6 +92,23 @@ export interface MarketingOffersResponse {
 export interface FilterOption {
   id: string;
   label: string;
+  country?: string;
+  slug?: string | null;
+  parentId?: string | null;
+  destinationType?: string;
+  isOlympic?: boolean;
+  sortOrder?: number | null;
+}
+
+export interface DestinationAssignment {
+  id: number;
+  name: string;
+  country: string;
+  slug: string | null;
+  parentId: number | null;
+  destinationType: string;
+  role: "primary" | "matched" | "rollup";
+  confidenceScore: number | null;
 }
 
 export interface CompetitorFilterOption extends FilterOption {
@@ -143,10 +162,27 @@ export async function getCompetitors(): Promise<CompetitorFilterOption[]> {
 }
 
 export async function getDestinations(): Promise<FilterOption[]> {
-  const payload = await fetchJson<Array<{ id: number; name: string }>>(DESTINATIONS_ENDPOINT);
+  const payload = await fetchJson<
+    Array<{
+      id: number;
+      name: string;
+      country: string;
+      slug: string | null;
+      parentId: number | null;
+      destinationType: string;
+      isOlympic: boolean;
+      sortOrder: number | null;
+    }>
+  >(DESTINATIONS_ENDPOINT);
   return payload.map((item) => ({
     id: String(item.id),
     label: item.name,
+    country: item.country,
+    slug: item.slug,
+    parentId: item.parentId ? String(item.parentId) : null,
+    destinationType: item.destinationType,
+    isOlympic: item.isOlympic,
+    sortOrder: item.sortOrder,
   }));
 }
 
@@ -160,6 +196,7 @@ export async function getAds(filters: AdsFilters): Promise<Snapshot> {
       destinationId: number | null;
       destinationName: string | null;
       destinationCountry: string | null;
+      destinations?: DestinationAssignment[];
       format: string | null;
       firstSeenGlobal: string | null;
       lastSeenGlobal: string | null;
@@ -198,6 +235,7 @@ export async function getAds(filters: AdsFilters): Promise<Snapshot> {
       destination_id: ad.destinationId ? String(ad.destinationId) : null,
       destination_name: ad.destinationName,
       destination_country: ad.destinationCountry,
+      destinations: ad.destinations ?? [],
       title: null,
       snippet: null,
       url: ad.transparencyUrl,
@@ -270,6 +308,7 @@ export async function getOffers(filters: AdsFilters): Promise<OffersResponse> {
       destinationName: string | null;
       destinationCountry: string | null;
       destinationId: number | null;
+      destinations?: DestinationAssignment[];
     }>;
     pagination?: { total?: number };
   }>(query ? `${OFFERS_ENDPOINT}?${query}` : OFFERS_ENDPOINT);
@@ -294,6 +333,7 @@ export async function getOffers(filters: AdsFilters): Promise<OffersResponse> {
       destination_name: item.destinationName ?? "",
       destination_country: item.destinationCountry ?? "",
       destination_id: item.destinationId ?? 0,
+      destinations: item.destinations ?? [],
     })),
     pagination: {
       total: typeof payload.pagination?.total === "number" ? payload.pagination.total : undefined,
@@ -313,6 +353,7 @@ export async function getOffersSummary(filters: AdsFilters = {}): Promise<AdsSum
     newOffers: number;
     activeOffers: number;
     removedOffers: number;
+    removedOffersLast7Days?: number;
     changedOffers: number;
   }>(query ? `${OFFERS_SUMMARY_ENDPOINT}?${query}` : OFFERS_SUMMARY_ENDPOINT);
 
@@ -321,6 +362,7 @@ export async function getOffersSummary(filters: AdsFilters = {}): Promise<AdsSum
     newAds: payload.newOffers,
     activeAds: payload.activeOffers,
     removedAds: payload.removedOffers,
+    removedAdsLast7Days: payload.removedOffersLast7Days ?? 0,
     changedAds: payload.changedOffers,
   };
 }

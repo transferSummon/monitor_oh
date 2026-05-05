@@ -16,7 +16,7 @@ import { writeAdsArtifact } from "./ads/artifacts";
 import { ADS_COMPETITOR_TARGETS, getAdsSettings } from "./ads/config";
 import { fetchGoogleAdsByTarget } from "./ads/dataforseo";
 import { extractTextFromImage, shutdownOcr } from "./ads/ocr";
-import type { AdsArtifactResult, NormalizedAdRecord } from "./ads/types";
+import type { AdsArtifactResult, NormalizedAdRecord, NormalizedDestinationAssignment } from "./ads/types";
 import { loadLocalEnv } from "./bootstrap-env";
 
 loadLocalEnv();
@@ -410,12 +410,25 @@ function normalizeUrl(value: string | null | undefined) {
   }
 }
 
-export function matchDestinationId(text: string, competitorId: number) {
+type DestinationAssignmentRole = "primary" | "matched" | "rollup";
+
+interface DestinationMatch {
+  destinationId: number;
+  score: number;
+  firstIndex: number;
+}
+
+export interface DestinationAssignmentMatch {
+  destinationId: number;
+  role: DestinationAssignmentRole;
+}
+
+function findDestinationMatches(text: string, competitorId: number): DestinationMatch[] {
   const haystack = normalizeText(text);
 
-  if (!haystack) return null;
+  if (!haystack) return [];
 
-  let best: { destinationId: number; score: number } | null = null;
+  const matchesByDestination = new Map<number, DestinationMatch>();
 
   for (const keyword of keywordSeed) {
     if (keyword.competitorId && keyword.competitorId !== competitorId) continue;
@@ -429,16 +442,177 @@ export function matchDestinationId(text: string, competitorId: number) {
     if (matches.length === 0) continue;
 
     const score = matches.length * 100 + needle.length;
+    const firstIndex = matches[0].index ?? Number.MAX_SAFE_INTEGER;
+    const existing = matchesByDestination.get(keyword.destinationId);
 
-    if (!best || score > best.score) {
-      best = {
+    if (!existing || score > existing.score) {
+      matchesByDestination.set(keyword.destinationId, {
         destinationId: keyword.destinationId,
         score,
-      };
+        firstIndex,
+      });
     }
   }
 
-  return best?.destinationId ?? null;
+  return [...matchesByDestination.values()].sort(
+    (left, right) => left.firstIndex - right.firstIndex || right.score - left.score,
+  );
+}
+
+export function matchDestinationAssignments(text: string, competitorId: number): DestinationAssignmentMatch[] {
+  const matches = findDestinationMatches(text, competitorId);
+  if (matches.length === 0) return [];
+
+  const destinationsById = new Map(destinationSeed.map((destination) => [destination.id, destination]));
+  const childMatches = matches.filter((match) => {
+    const destination = destinationsById.get(match.destinationId);
+    return Boolean(destination?.parentId);
+  });
+
+  if (childMatches.length === 0) {
+    return [{ destinationId: matches[0].destinationId, role: "primary" }];
+  }
+
+  const assignments: DestinationAssignmentMatch[] = [];
+  const seen = new Set<number>();
+  const parentIds = new Set<number>();
+
+  for (const match of childMatches) {
+    const destination = destinationsById.get(match.destinationId);
+    if (destination?.parentId) {
+      parentIds.add(destination.parentId);
+    }
+  }
+
+  for (const parentId of parentIds) {
+    assignments.push({ destinationId: parentId, role: "rollup" });
+    seen.add(parentId);
+  }
+
+  childMatches.forEach((match, index) => {
+    if (seen.has(match.destinationId)) return;
+
+    assignments.push({
+      destinationId: match.destinationId,
+      role: index === 0 ? "primary" : "matched",
+    });
+    seen.add(match.destinationId);
+  });
+
+  return assignments;
+}
+
+function primaryDestinationIdFromAssignments(assignments: DestinationAssignmentMatch[]) {
+  return assignments.find((assignment) => assignment.role === "primary")?.destinationId ?? assignments[0]?.destinationId ?? null;
+}
+
+export function matchDestinationId(text: string, competitorId: number) {
+  return primaryDestinationIdFromAssignments(matchDestinationAssignments(text, competitorId));
+}
+
+let destinationAssignmentTablesReady: boolean | null = null;
+
+async function hasDestinationAssignmentTables() {
+  if (destinationAssignmentTablesReady === true) return destinationAssignmentTablesReady;
+  if (!hasDatabase()) {
+    destinationAssignmentTablesReady = false;
+    return destinationAssignmentTablesReady;
+  }
+
+  const db = getDb();
+  if (!db) {
+    destinationAssignmentTablesReady = false;
+    return destinationAssignmentTablesReady;
+  }
+
+  const rows = await db.execute<{
+    has_ad_destinations: boolean;
+    has_offer_destinations: boolean;
+  }>(sql`
+    SELECT
+      to_regclass('public.ad_destinations') IS NOT NULL AS has_ad_destinations,
+      to_regclass('public.offer_destinations') IS NOT NULL AS has_offer_destinations
+  `);
+
+  destinationAssignmentTablesReady = Boolean(rows[0]?.has_ad_destinations && rows[0]?.has_offer_destinations);
+  return destinationAssignmentTablesReady;
+}
+
+let destinationDbIdMap: Map<number, number> | null = null;
+
+function createLegacyDestinationDbIdMap() {
+  const map = new Map<number, number>();
+
+  for (const destination of destinationSeed) {
+    map.set(destination.id, destination.parentId ?? destination.id);
+  }
+
+  return map;
+}
+
+async function getDestinationDbIdMap() {
+  if (destinationDbIdMap) return destinationDbIdMap;
+
+  const fallback = createLegacyDestinationDbIdMap();
+  if (!hasDatabase()) return fallback;
+
+  const db = getDb();
+  if (!db) return fallback;
+
+  const schemaRows = await db.execute<{ has_slug: boolean }>(sql`
+    SELECT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'destinations'
+        AND column_name = 'slug'
+    ) AS has_slug
+  `);
+
+  if (!schemaRows[0]?.has_slug) return fallback;
+
+  const rows = await db.execute<{ id: number; country: string; slug: string | null }>(sql`
+    SELECT id, country, slug
+    FROM destinations
+    WHERE slug IS NOT NULL
+  `);
+  const byCountrySlug = new Map(
+    rows
+      .filter((row) => row.slug)
+      .map((row) => [`${row.country}:${row.slug}`, Number(row.id)]),
+  );
+
+  for (const destination of destinationSeed) {
+    const mappedId = byCountrySlug.get(`${destination.country}:${destination.slug}`);
+    if (mappedId) {
+      fallback.set(destination.id, mappedId);
+      continue;
+    }
+
+    if (destination.parentId) {
+      fallback.set(destination.id, fallback.get(destination.parentId) ?? destination.parentId);
+    }
+  }
+
+  destinationDbIdMap = fallback;
+  return destinationDbIdMap;
+}
+
+async function resolveDestinationIdForDb(destinationId: number | null) {
+  if (!destinationId) return null;
+
+  const map = await getDestinationDbIdMap();
+  return map.get(destinationId) ?? destinationId;
+}
+
+async function resolveDestinationAssignmentsForDb<T extends { destinationId: number }>(assignments: T[]) {
+  if (assignments.length === 0) return assignments;
+
+  const map = await getDestinationDbIdMap();
+  return assignments.map((assignment) => ({
+    ...assignment,
+    destinationId: map.get(assignment.destinationId) ?? assignment.destinationId,
+  }));
 }
 
 function todayDate(value = new Date()) {
@@ -844,10 +1018,12 @@ async function persistOfferRecord(result: ScrapeRunResult, competitorId: number,
       imageUrl: record.imageUrl ?? null,
     }),
   );
-  const destinationId = matchDestinationId(
+  const destinationAssignments = matchDestinationAssignments(
     [record.destination, record.propertyName, canonicalUrl].filter(Boolean).join(" "),
     competitorId,
   );
+  const destinationId = primaryDestinationIdFromAssignments(destinationAssignments);
+  const destinationConfidenceScore = destinationId ? 0.8 : null;
 
   const existing = await db.execute(sql<{
     id: number;
@@ -902,14 +1078,8 @@ async function persistOfferRecord(result: ScrapeRunResult, competitorId: number,
       INSERT INTO offer_changes (offer_id, change_type, change_date, previous_snapshot, new_snapshot, created_at)
       VALUES (${offerId}, 'new', ${runDate}, NULL, ${rawData}::jsonb, NOW())
     `);
-    await db.execute(sql`
-      INSERT INTO offer_classification (offer_id, destination_id, confidence_score, created_at)
-      VALUES (${offerId}, ${destinationId}, ${destinationId ? 0.8 : null}, NOW())
-      ON CONFLICT (offer_id) DO UPDATE
-      SET destination_id = EXCLUDED.destination_id,
-          confidence_score = EXCLUDED.confidence_score,
-          created_at = NOW()
-    `);
+    await upsertOfferClassification(offerId, destinationId, destinationConfidenceScore);
+    await upsertOfferDestinationAssignments(offerId, destinationAssignments, destinationConfidenceScore);
     await maybeInsertAlert(offerId, null, "new_offer", `New live-price offer detected for ${record.propertyName}.`);
 
     return { offerId, changeType: "new" as const };
@@ -936,14 +1106,8 @@ async function persistOfferRecord(result: ScrapeRunResult, competitorId: number,
         snapshot_hash = ${snapshotHash}
     WHERE id = ${offerId}
   `);
-  await db.execute(sql`
-    INSERT INTO offer_classification (offer_id, destination_id, confidence_score, created_at)
-    VALUES (${offerId}, ${destinationId}, ${destinationId ? 0.8 : null}, NOW())
-    ON CONFLICT (offer_id) DO UPDATE
-    SET destination_id = EXCLUDED.destination_id,
-        confidence_score = EXCLUDED.confidence_score,
-        created_at = NOW()
-  `);
+  await upsertOfferClassification(offerId, destinationId, destinationConfidenceScore);
+  await upsertOfferDestinationAssignments(offerId, destinationAssignments, destinationConfidenceScore);
 
   if (changed) {
     await db.execute(sql`
@@ -1446,13 +1610,14 @@ async function enrichAdsWithClassification(
     let ocrAttempted = false;
     let ocrError: string | null = null;
     const ocrSourceUrl = record.previewImageUrl;
-    let destinationId = matchDestinationId(baseText, competitorId);
+    let destinationAssignments = matchDestinationAssignments(baseText, competitorId);
+    let destinationId = primaryDestinationIdFromAssignments(destinationAssignments);
     let confidenceScore = destinationId ? 0.45 : null;
     const hasOcrCapacity = settings.ocrMaxPerCompetitor <= 0 || ocrCount < settings.ocrMaxPerCompetitor;
 
     if (
       settings.ocrEnabled &&
-      !destinationId &&
+      destinationAssignments.length === 0 &&
       record.previewImageUrl &&
       hasOcrCapacity
     ) {
@@ -1469,9 +1634,10 @@ async function enrichAdsWithClassification(
         ocrError = error instanceof Error ? error.message : "Unknown OCR error.";
       }
 
-      const classifiedFromOcr = matchDestinationId([baseText, ocrText].filter(Boolean).join(" "), competitorId);
-      if (classifiedFromOcr) {
-        destinationId = classifiedFromOcr;
+      const classifiedFromOcr = matchDestinationAssignments([baseText, ocrText].filter(Boolean).join(" "), competitorId);
+      if (classifiedFromOcr.length > 0) {
+        destinationAssignments = classifiedFromOcr;
+        destinationId = primaryDestinationIdFromAssignments(destinationAssignments);
         confidenceScore = 0.82;
       }
     }
@@ -1515,6 +1681,7 @@ async function enrichAdsWithClassification(
       destinationId,
       destinationName: destination?.name ?? null,
       destinationCountry: destination?.country ?? null,
+      destinationAssignments,
       confidenceScore,
       snapshotHash,
       rawData: record.rawData,
@@ -1533,6 +1700,7 @@ async function upsertAdClassification(
 
   const db = getDb();
   if (!db) return;
+  const dbDestinationId = await resolveDestinationIdForDb(destinationId);
 
   const existing = await db.execute(sql<{ id: number }>`
     SELECT id
@@ -1544,18 +1712,101 @@ async function upsertAdClassification(
   if (existing.length === 0) {
     await db.execute(sql`
       INSERT INTO ai_classification (ad_id, destination_id, confidence_score, created_at)
-      VALUES (${adId}, ${destinationId}, ${confidenceScore}, NOW())
+      VALUES (${adId}, ${dbDestinationId}, ${confidenceScore}, NOW())
     `);
     return;
   }
 
   await db.execute(sql`
     UPDATE ai_classification
-    SET destination_id = ${destinationId},
+    SET destination_id = ${dbDestinationId},
         confidence_score = ${confidenceScore},
         created_at = NOW()
     WHERE ad_id = ${adId}
   `);
+}
+
+async function upsertAdDestinationAssignments(
+  adId: number,
+  assignments: DestinationAssignmentMatch[],
+  confidenceScore: number | null,
+  source = "keyword",
+) {
+  if (!hasDatabase()) return;
+  if (!(await hasDestinationAssignmentTables())) return;
+
+  const db = getDb();
+  if (!db) return;
+  const dbAssignments = await resolveDestinationAssignmentsForDb(assignments);
+
+  await db.execute(sql`
+    DELETE FROM ad_destinations
+    WHERE ad_id = ${adId}
+  `);
+
+  for (const assignment of dbAssignments) {
+    await db.execute(sql`
+      INSERT INTO ad_destinations (ad_id, destination_id, role, confidence_score, source, created_at)
+      VALUES (${adId}, ${assignment.destinationId}, ${assignment.role}, ${confidenceScore}, ${source}, NOW())
+      ON CONFLICT (ad_id, destination_id) DO UPDATE
+      SET role = EXCLUDED.role,
+          confidence_score = EXCLUDED.confidence_score,
+          source = EXCLUDED.source,
+          created_at = NOW()
+    `);
+  }
+}
+
+async function upsertOfferClassification(
+  offerId: number,
+  destinationId: number | null,
+  confidenceScore: number | null,
+) {
+  if (!hasDatabase()) return;
+
+  const db = getDb();
+  if (!db) return;
+  const dbDestinationId = await resolveDestinationIdForDb(destinationId);
+
+  await db.execute(sql`
+    INSERT INTO offer_classification (offer_id, destination_id, confidence_score, created_at)
+    VALUES (${offerId}, ${dbDestinationId}, ${confidenceScore}, NOW())
+    ON CONFLICT (offer_id) DO UPDATE
+    SET destination_id = EXCLUDED.destination_id,
+        confidence_score = EXCLUDED.confidence_score,
+        created_at = NOW()
+  `);
+}
+
+async function upsertOfferDestinationAssignments(
+  offerId: number,
+  assignments: DestinationAssignmentMatch[],
+  confidenceScore: number | null,
+  source = "keyword",
+) {
+  if (!hasDatabase()) return;
+  if (!(await hasDestinationAssignmentTables())) return;
+
+  const db = getDb();
+  if (!db) return;
+  const dbAssignments = await resolveDestinationAssignmentsForDb(assignments);
+
+  await db.execute(sql`
+    DELETE FROM offer_destinations
+    WHERE offer_id = ${offerId}
+  `);
+
+  for (const assignment of dbAssignments) {
+    await db.execute(sql`
+      INSERT INTO offer_destinations (offer_id, destination_id, role, confidence_score, source, created_at)
+      VALUES (${offerId}, ${assignment.destinationId}, ${assignment.role}, ${confidenceScore}, ${source}, NOW())
+      ON CONFLICT (offer_id, destination_id) DO UPDATE
+      SET role = EXCLUDED.role,
+          confidence_score = EXCLUDED.confidence_score,
+          source = EXCLUDED.source,
+          created_at = NOW()
+    `);
+  }
 }
 
 export async function backfillAdClassifications(options: { ocrMissing?: boolean; limit?: number | null } = {}) {
@@ -1661,7 +1912,7 @@ export async function backfillAdClassifications(options: { ocrMissing?: boolean;
         `);
       }
 
-      const destinationId = matchDestinationId(
+      const destinationAssignments = matchDestinationAssignments(
         buildAdClassificationText({
           advertiserTitle: asText(metadata.advertiser_title),
           target: asText(metadata.target),
@@ -1674,9 +1925,11 @@ export async function backfillAdClassifications(options: { ocrMissing?: boolean;
         }),
         Number(row.competitor_id),
       );
+      const destinationId = primaryDestinationIdFromAssignments(destinationAssignments);
 
       const confidenceScore = destinationId ? (ocrText ? 0.82 : 0.45) : null;
       await upsertAdClassification(Number(row.ad_id), destinationId, confidenceScore);
+      await upsertAdDestinationAssignments(Number(row.ad_id), destinationAssignments, confidenceScore, "backfill");
 
       if (destinationId) {
         classified += 1;
@@ -1695,6 +1948,177 @@ export async function backfillAdClassifications(options: { ocrMissing?: boolean;
     ocrAttempted,
     ocrFailed,
     message: `Ads backfill processed ${rows.length} ads and classified ${classified}.`,
+  };
+}
+
+export async function backfillDestinationAssignments(
+  options: {
+    module?: "all" | "ads" | "offers";
+    apply?: boolean;
+    limit?: number | null;
+  } = {},
+) {
+  if (!hasDatabase()) {
+    return {
+      ok: false,
+      apply: Boolean(options.apply),
+      module: options.module ?? "all",
+      ads: { processed: 0, classified: 0 },
+      offers: { processed: 0, classified: 0 },
+      message: "DATABASE_URL is required for destination backfill.",
+    };
+  }
+
+  const db = getDb();
+  if (!db) {
+    return {
+      ok: false,
+      apply: Boolean(options.apply),
+      module: options.module ?? "all",
+      ads: { processed: 0, classified: 0 },
+      offers: { processed: 0, classified: 0 },
+      message: "Database client is unavailable.",
+    };
+  }
+
+  const module = options.module ?? "all";
+  const apply = Boolean(options.apply);
+  const limit = options.limit && options.limit > 0 ? options.limit : 10000;
+  if (apply && !(await hasDestinationAssignmentTables())) {
+    return {
+      ok: false,
+      apply,
+      module,
+      ads: { processed: 0, classified: 0 },
+      offers: { processed: 0, classified: 0 },
+      message: "Run the Greece destination hierarchy migration before applying destination backfill.",
+    };
+  }
+
+  const summary = {
+    ads: { processed: 0, classified: 0 },
+    offers: { processed: 0, classified: 0 },
+  };
+
+  if (module === "all" || module === "ads") {
+    const rows = await db.execute(sql<{
+      ad_id: number;
+      competitor_id: number;
+      creative_id: string;
+      advertiser_id: string | null;
+      media_format: string | null;
+      image: unknown;
+      videos: unknown;
+      metadata: unknown;
+    }>`
+      WITH latest_snapshots AS (
+        SELECT DISTINCT ON (snap.ad_id)
+          snap.ad_id,
+          snap.image,
+          snap.videos,
+          snap.metadata
+        FROM ad_snapshots snap
+        ORDER BY snap.ad_id, snap.created_at DESC
+      )
+      SELECT
+        a.id AS ad_id,
+        a.competitor_id,
+        a.creative_id,
+        a.advertiser_id,
+        a.media_format,
+        snap.image,
+        snap.videos,
+        snap.metadata
+      FROM ads a
+      INNER JOIN latest_snapshots snap ON snap.ad_id = a.id
+      ORDER BY a.id DESC
+      LIMIT ${limit}
+    `);
+
+    for (const row of rows) {
+      summary.ads.processed += 1;
+      const metadata = asRecord(row.metadata) ?? {};
+      const previewImageUrl = getPreviewImageUrl(row.image, metadata);
+      const ocrText = asText(metadata.ocr_text);
+      const assignments = matchDestinationAssignments(
+        buildAdClassificationText({
+          advertiserTitle: asText(metadata.advertiser_title),
+          target: asText(metadata.target),
+          transparencyUrl: asText(metadata.transparency_url),
+          previewImageUrl,
+          metadata,
+          image: row.image,
+          videos: row.videos,
+          ocrText,
+        }),
+        Number(row.competitor_id),
+      );
+      const destinationId = primaryDestinationIdFromAssignments(assignments);
+      const confidenceScore = destinationId ? (ocrText ? 0.82 : 0.45) : null;
+
+      if (destinationId) {
+        summary.ads.classified += 1;
+      }
+
+      if (apply) {
+        await upsertAdClassification(Number(row.ad_id), destinationId, confidenceScore);
+        await upsertAdDestinationAssignments(Number(row.ad_id), assignments, confidenceScore, "backfill");
+      }
+    }
+  }
+
+  if (module === "all" || module === "offers") {
+    const rows = await db.execute(sql<{
+      offer_id: number;
+      competitor_id: number;
+      offer_title: string;
+      offer_url: string;
+      description: string | null;
+      raw_data: unknown;
+    }>`
+      SELECT
+        id AS offer_id,
+        competitor_id,
+        offer_title,
+        offer_url,
+        description,
+        raw_data
+      FROM scraped_offers
+      ORDER BY id DESC
+      LIMIT ${limit}
+    `);
+
+    for (const row of rows) {
+      summary.offers.processed += 1;
+      const assignments = matchDestinationAssignments(
+        [
+          row.offer_title,
+          row.offer_url,
+          row.description,
+          JSON.stringify(row.raw_data ?? {}),
+        ].filter(Boolean).join(" "),
+        Number(row.competitor_id),
+      );
+      const destinationId = primaryDestinationIdFromAssignments(assignments);
+      const confidenceScore = destinationId ? 0.8 : null;
+
+      if (destinationId) {
+        summary.offers.classified += 1;
+      }
+
+      if (apply) {
+        await upsertOfferClassification(Number(row.offer_id), destinationId, confidenceScore);
+        await upsertOfferDestinationAssignments(Number(row.offer_id), assignments, confidenceScore, "backfill");
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    apply,
+    module,
+    ...summary,
+    message: `Destination backfill ${apply ? "applied" : "dry run"} for ${module}.`,
   };
 }
 
@@ -2080,6 +2504,7 @@ async function persistAdRecord(
       `);
     }
     await upsertAdClassification(adId, record.destinationId, record.confidenceScore);
+    await upsertAdDestinationAssignments(adId, record.destinationAssignments, record.confidenceScore);
 
     return { adId, changeType: initialStatus };
   }
@@ -2136,6 +2561,7 @@ async function persistAdRecord(
         created_at = NOW()
   `);
   await upsertAdClassification(adId, record.destinationId, record.confidenceScore);
+  await upsertAdDestinationAssignments(adId, record.destinationAssignments, record.confidenceScore);
 
   if (changeType === "removed") {
     await db.execute(sql`

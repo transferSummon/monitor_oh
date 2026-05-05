@@ -1,4 +1,4 @@
-import type { AdsFilters } from "@/lib/api";
+import type { AdsFilters, DestinationAssignment } from "@/lib/api";
 
 const ALERTS_ENDPOINT = "/api/alerts";
 
@@ -17,6 +17,7 @@ export interface NotificationItem {
   competitor_name: string;
   destination_id?: string | null;
   destination_name: string | null;
+  destinations: DestinationAssignment[];
   message: string;
   created_at: string;
   is_read: boolean;
@@ -76,6 +77,7 @@ export async function fetchNotifications(
       competitorName: string;
       destinationId: string | null;
       destinationName: string | null;
+      destinations?: DestinationAssignment[];
       message: string;
       createdAt: string;
       isRead: boolean;
@@ -100,6 +102,7 @@ export async function fetchNotifications(
       competitor_name: item.competitorName,
       destination_id: item.destinationId,
       destination_name: item.destinationName,
+      destinations: item.destinations ?? [],
       message: item.message,
       created_at: item.createdAt,
       is_read: item.isRead,

@@ -15,6 +15,13 @@ export function SummaryCards({
   isLoading = false,
   itemLabel = "Ads",
 }: SummaryCardsProps) {
+  const removedLast7Days = summary.removedAdsLast7Days;
+  const removedValue = removedLast7Days ?? summary.removedAds ?? 0;
+  const removedSecondaryText =
+    typeof removedLast7Days === "number"
+      ? `${(summary.removedAds ?? 0).toLocaleString()} total removed`
+      : undefined;
+
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
       <SummaryCard
@@ -42,10 +49,11 @@ export function SummaryCards({
       />
       <SummaryCard
         title="Removed"
-        value={summary.removedAds ?? 0}
+        value={removedValue}
         icon={Minus}
         variant="danger"
         subtitle="Removed in last 7 days"
+        secondaryText={removedSecondaryText}
         isLoading={isLoading}
       />
       <SummaryCard

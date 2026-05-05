@@ -13,7 +13,7 @@ import type {
   OffersResponse,
   OffersSummaryResponse,
 } from "@olympic/contracts";
-import { getDb, hasDatabase } from "@olympic/db";
+import { destinationSeed, getDb, hasDatabase } from "@olympic/db";
 
 import {
   filterByIds,
@@ -23,6 +23,323 @@ import {
   sortByField,
 } from "./demo-store";
 import { extractAdImageMedia, extractAdVideoMedia } from "./ad-media";
+
+type DestinationAssignmentRole = "primary" | "matched" | "rollup";
+
+function toDestinationRole(value: unknown): DestinationAssignmentRole {
+  return value === "matched" || value === "rollup" ? value : "primary";
+}
+
+function parseDestinationAssignments(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      const id = Number(row.id);
+      if (!Number.isFinite(id) || id <= 0) return null;
+
+      return {
+        id,
+        name: String(row.name ?? ""),
+        country: String(row.country ?? ""),
+        slug: row.slug ? String(row.slug) : null,
+        parentId: row.parentId || row.parent_id ? Number(row.parentId ?? row.parent_id) : null,
+        destinationType: String(row.destinationType ?? row.destination_type ?? "country"),
+        role: toDestinationRole(row.role),
+        confidenceScore:
+          typeof row.confidenceScore === "number"
+            ? row.confidenceScore
+            : typeof row.confidence_score === "number"
+              ? row.confidence_score
+              : null,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function legacyDestinationAssignment(row: {
+  destination_id?: unknown;
+  destination_name?: unknown;
+  destination_country?: unknown;
+}) {
+  const id = Number(row.destination_id);
+  if (!Number.isFinite(id) || id <= 0) return [];
+
+  return [
+    {
+      id,
+      name: String(row.destination_name ?? ""),
+      country: String(row.destination_country ?? ""),
+      slug: null,
+      parentId: null,
+      destinationType: "country",
+      role: "primary" as const,
+      confidenceScore: null,
+    },
+  ];
+}
+
+type DestinationSchemaState = {
+  metadata: boolean;
+  assignments: boolean;
+};
+
+let destinationSchemaState: DestinationSchemaState | null = null;
+
+async function getDestinationSchemaState() {
+  if (destinationSchemaState?.metadata && destinationSchemaState.assignments) return destinationSchemaState;
+
+  const db = getDb();
+  if (!db) {
+    destinationSchemaState = { metadata: false, assignments: false };
+    return destinationSchemaState;
+  }
+
+  const rows = await db.execute<{
+    has_metadata: boolean;
+    has_ad_destinations: boolean;
+    has_offer_destinations: boolean;
+  }>(sql`
+    SELECT
+      EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'destinations'
+          AND column_name = 'slug'
+      ) AS has_metadata,
+      to_regclass('public.ad_destinations') IS NOT NULL AS has_ad_destinations,
+      to_regclass('public.offer_destinations') IS NOT NULL AS has_offer_destinations
+  `);
+
+  destinationSchemaState = {
+    metadata: Boolean(rows[0]?.has_metadata),
+    assignments: Boolean(rows[0]?.has_metadata && rows[0]?.has_ad_destinations && rows[0]?.has_offer_destinations),
+  };
+  return destinationSchemaState;
+}
+
+function adDestinationsSelect(schema: DestinationSchemaState) {
+  if (schema.assignments) {
+    return sql`
+      COALESCE(
+        (
+          SELECT json_agg(
+            json_build_object(
+              'id', ad_dest.id,
+              'name', ad_dest.name,
+              'country', ad_dest.country,
+              'slug', ad_dest.slug,
+              'parentId', ad_dest.parent_id,
+              'destinationType', ad_dest.destination_type,
+              'role', adx.role,
+              'confidenceScore', adx.confidence_score
+            )
+            ORDER BY
+              CASE adx.role WHEN 'rollup' THEN 0 WHEN 'primary' THEN 1 ELSE 2 END,
+              COALESCE(ad_dest.sort_order, 9999),
+              ad_dest.name
+          )
+          FROM ad_destinations adx
+          JOIN destinations ad_dest ON ad_dest.id = adx.destination_id
+          WHERE adx.ad_id = a.id
+        ),
+        CASE
+          WHEN ai.destination_id IS NOT NULL THEN json_build_array(
+            json_build_object(
+              'id', d.id,
+              'name', d.name,
+              'country', d.country,
+              'slug', d.slug,
+              'parentId', d.parent_id,
+              'destinationType', d.destination_type,
+              'role', 'primary',
+              'confidenceScore', ai.confidence_score
+            )
+          )
+          ELSE '[]'::json
+        END
+      ) AS destinations`;
+  }
+
+  if (schema.metadata) {
+    return sql`
+      CASE
+        WHEN ai.destination_id IS NOT NULL THEN json_build_array(
+          json_build_object(
+            'id', d.id,
+            'name', d.name,
+            'country', d.country,
+            'slug', d.slug,
+            'parentId', d.parent_id,
+            'destinationType', d.destination_type,
+            'role', 'primary',
+            'confidenceScore', ai.confidence_score
+          )
+        )
+        ELSE '[]'::json
+      END AS destinations`;
+  }
+
+  return sql`
+    CASE
+      WHEN ai.destination_id IS NOT NULL THEN json_build_array(
+        json_build_object(
+          'id', d.id,
+          'name', d.name,
+          'country', d.country,
+          'role', 'primary',
+          'confidenceScore', ai.confidence_score
+        )
+      )
+      ELSE '[]'::json
+    END AS destinations`;
+}
+
+function adDestinationFilter(schema: DestinationSchemaState, destinationId: string | null) {
+  if (schema.assignments) {
+    return sql`
+      AND (
+        ${destinationId}::text IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM ad_destinations ad_filter
+          WHERE ad_filter.ad_id = a.id
+            AND ad_filter.destination_id = ANY(string_to_array(${destinationId}, ',')::int[])
+        )
+        OR (
+          NOT EXISTS (SELECT 1 FROM ad_destinations ad_existing WHERE ad_existing.ad_id = a.id)
+          AND ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[])
+        )
+      )`;
+  }
+
+  return sql`
+    AND (${destinationId}::text IS NULL OR ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))`;
+}
+
+function offerDestinationsSelect(schema: DestinationSchemaState) {
+  if (schema.assignments) {
+    return sql`
+      COALESCE(
+        (
+          SELECT json_agg(
+            json_build_object(
+              'id', offer_dest.id,
+              'name', offer_dest.name,
+              'country', offer_dest.country,
+              'slug', offer_dest.slug,
+              'parentId', offer_dest.parent_id,
+              'destinationType', offer_dest.destination_type,
+              'role', odx.role,
+              'confidenceScore', odx.confidence_score
+            )
+            ORDER BY
+              CASE odx.role WHEN 'rollup' THEN 0 WHEN 'primary' THEN 1 ELSE 2 END,
+              COALESCE(offer_dest.sort_order, 9999),
+              offer_dest.name
+          )
+          FROM offer_destinations odx
+          JOIN destinations offer_dest ON offer_dest.id = odx.destination_id
+          WHERE odx.offer_id = o.id
+        ),
+        CASE
+          WHEN oc.destination_id IS NOT NULL THEN json_build_array(
+            json_build_object(
+              'id', d.id,
+              'name', d.name,
+              'country', d.country,
+              'slug', d.slug,
+              'parentId', d.parent_id,
+              'destinationType', d.destination_type,
+              'role', 'primary',
+              'confidenceScore', oc.confidence_score
+            )
+          )
+          ELSE '[]'::json
+        END
+      ) AS destinations`;
+  }
+
+  if (schema.metadata) {
+    return sql`
+      CASE
+        WHEN oc.destination_id IS NOT NULL THEN json_build_array(
+          json_build_object(
+            'id', d.id,
+            'name', d.name,
+            'country', d.country,
+            'slug', d.slug,
+            'parentId', d.parent_id,
+            'destinationType', d.destination_type,
+            'role', 'primary',
+            'confidenceScore', oc.confidence_score
+          )
+        )
+        ELSE '[]'::json
+      END AS destinations`;
+  }
+
+  return sql`
+    CASE
+      WHEN oc.destination_id IS NOT NULL THEN json_build_array(
+        json_build_object(
+          'id', d.id,
+          'name', d.name,
+          'country', d.country,
+          'role', 'primary',
+          'confidenceScore', oc.confidence_score
+        )
+      )
+      ELSE '[]'::json
+    END AS destinations`;
+}
+
+function offerDestinationFilter(schema: DestinationSchemaState, destinationId: string | null) {
+  if (schema.assignments) {
+    return sql`
+      AND (
+        ${destinationId}::text IS NULL
+        OR EXISTS (
+          SELECT 1
+          FROM offer_destinations offer_filter
+          WHERE offer_filter.offer_id = o.id
+            AND offer_filter.destination_id = ANY(string_to_array(${destinationId}, ',')::int[])
+        )
+        OR (
+          NOT EXISTS (SELECT 1 FROM offer_destinations offer_existing WHERE offer_existing.offer_id = o.id)
+          AND oc.destination_id = ANY(string_to_array(${destinationId}, ',')::int[])
+        )
+      )`;
+  }
+
+  return sql`
+    AND (${destinationId}::text IS NULL OR oc.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))`;
+}
+
+function destinationSeedFallback(row: { id: number; name: string; country: string }): DestinationDto {
+  const id = Number(row.id);
+  const seed =
+    destinationSeed.find((destination) => destination.id === id) ??
+    destinationSeed.find(
+      (destination) =>
+        destination.name.toLowerCase() === row.name.toLowerCase() &&
+        destination.country.toLowerCase() === row.country.toLowerCase(),
+    );
+
+  return {
+    id,
+    name: String(row.name),
+    country: String(row.country),
+    slug: seed?.slug ?? null,
+    parentId: seed?.parentId ?? null,
+    destinationType: seed?.destinationType ?? "country",
+    isOlympic: seed?.isOlympic ?? false,
+    sortOrder: seed?.sortOrder ?? null,
+  };
+}
 
 function toInt(value: string | null | undefined, fallback: number) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -68,6 +385,28 @@ function toFilterValue(searchParams: URLSearchParams, key: string) {
   return single && single.trim() ? single : null;
 }
 
+function filterByDestinationAssignments<
+  T extends { destinationId?: number | string | null; destinations?: Array<{ id: number | string }> },
+>(items: T[], rawIds: string | undefined) {
+  if (!rawIds) return items;
+
+  const ids = new Set(
+    rawIds
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+  if (ids.size === 0) return items;
+
+  return items.filter((item) => {
+    if (item.destinationId !== null && item.destinationId !== undefined && ids.has(String(item.destinationId))) {
+      return true;
+    }
+
+    return item.destinations?.some((destination) => ids.has(String(destination.id))) ?? false;
+  });
+}
+
 function timestampMs(value: unknown) {
   if (value instanceof Date) return value.getTime();
 
@@ -77,6 +416,14 @@ function timestampMs(value: unknown) {
   }
 
   return null;
+}
+
+function isWithinLastDays(value: unknown, days: number) {
+  const timestamp = timestampMs(value);
+  if (timestamp === null) return false;
+
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  return timestamp >= cutoff;
 }
 
 export function isAdVisibleForLatestRun(input: {
@@ -157,16 +504,47 @@ export async function listDestinations(): Promise<DestinationDto[]> {
   const db = getDb();
   if (!db) return [];
 
-  const rows = await db.execute(sql<{ id: number; name: string; country: string }>`
-    SELECT id, name, country
+  const schema = await getDestinationSchemaState();
+  if (!schema.metadata) {
+    const rows = await db.execute(sql<{ id: number; name: string; country: string }>`
+      SELECT id, name, country
+      FROM destinations
+      ORDER BY country ASC, name ASC
+    `);
+
+    return rows.map((row) =>
+      destinationSeedFallback({
+        id: Number(row.id),
+        name: String(row.name),
+        country: String(row.country),
+      }),
+    );
+  }
+
+  const rows = await db.execute(sql<{
+    id: number;
+    name: string;
+    country: string;
+    slug: string | null;
+    parent_id: number | null;
+    destination_type: string | null;
+    is_olympic: boolean | null;
+    sort_order: number | null;
+  }>`
+    SELECT id, name, country, slug, parent_id, destination_type, is_olympic, sort_order
     FROM destinations
-    ORDER BY country ASC, name ASC
+    ORDER BY COALESCE(sort_order, 9999) ASC, country ASC, name ASC
   `);
 
   return rows.map((row) => ({
     id: Number(row.id),
     name: String(row.name),
     country: String(row.country),
+    slug: row.slug ? String(row.slug) : null,
+    parentId: row.parent_id ? Number(row.parent_id) : null,
+    destinationType: row.destination_type ? String(row.destination_type) : "country",
+    isOlympic: Boolean(row.is_olympic),
+    sortOrder: row.sort_order ? Number(row.sort_order) : null,
   }));
 }
 
@@ -178,7 +556,7 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
     const demo = await loadDemoStore();
     let items = demo.ads;
     items = filterByIds(items, toFilterValue(searchParams, "competitor_id") ?? undefined, (item) => item.competitorId);
-    items = filterByIds(items, toFilterValue(searchParams, "destination_id") ?? undefined, (item) => item.destinationId);
+    items = filterByDestinationAssignments(items, toFilterValue(searchParams, "destination_id") ?? undefined);
     items = filterBySearch(items, searchParams.get("search") ?? undefined, (item) =>
       [item.creativeId, item.competitorName, item.destinationName ?? "", item.transparencyUrl ?? ""].join(" "),
     );
@@ -194,6 +572,9 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
   const competitorId = toFilterValue(searchParams, "competitor_id");
   const destinationId = toFilterValue(searchParams, "destination_id");
   const search = searchParams.get("search");
+  const schema = await getDestinationSchemaState();
+  const destinationAssignmentsSelect = adDestinationsSelect(schema);
+  const destinationFilter = adDestinationFilter(schema, destinationId);
   const rows = await db.execute(sql<any>`
     WITH latest_status AS (
       SELECT DISTINCT ON (s.ad_id)
@@ -236,6 +617,7 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
       ai.destination_id,
       d.name AS destination_name,
       d.country AS destination_country,
+      ${destinationAssignmentsSelect},
       a.media_format,
       a.first_seen_global,
       a.last_seen_global,
@@ -261,8 +643,9 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
     LEFT JOIN destinations d ON d.id = ai.destination_id
     LEFT JOIN competitors c ON c.id = a.competitor_id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
+      AND (${status}::text IS NOT NULL OR COALESCE(ls.status, 'active') <> 'removed')
       AND (${competitorId}::text IS NULL OR a.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${search}::text IS NULL OR a.creative_id ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
       AND (
         ls.status = 'removed'
@@ -311,8 +694,9 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
     LEFT JOIN ai_classification ai ON ai.ad_id = a.id
     LEFT JOIN competitors c ON c.id = a.competitor_id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
+      AND (${status}::text IS NOT NULL OR COALESCE(ls.status, 'active') <> 'removed')
       AND (${competitorId}::text IS NULL OR a.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${search}::text IS NULL OR a.creative_id ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
       AND (
         ls.status = 'removed'
@@ -343,6 +727,10 @@ export async function listAds(searchParams: URLSearchParams): Promise<AdsRespons
         destinationId: row.destination_id ? Number(row.destination_id) : null,
         destinationName: row.destination_name ? String(row.destination_name) : null,
         destinationCountry: row.destination_country ? String(row.destination_country) : null,
+        destinations:
+          parseDestinationAssignments(row.destinations).length > 0
+            ? parseDestinationAssignments(row.destinations)
+            : legacyDestinationAssignment(row),
         format: row.media_format ? String(row.media_format) : null,
         firstSeenGlobal: toIsoString(row.first_seen_global),
         lastSeenGlobal: toIsoString(row.last_seen_global),
@@ -380,7 +768,7 @@ export async function getAdsSummary(searchParams: URLSearchParams = new URLSearc
     const demo = await loadDemoStore();
     let items = demo.ads;
     items = filterByIds(items, toFilterValue(searchParams, "competitor_id") ?? undefined, (item) => item.competitorId);
-    items = filterByIds(items, toFilterValue(searchParams, "destination_id") ?? undefined, (item) => item.destinationId);
+    items = filterByDestinationAssignments(items, toFilterValue(searchParams, "destination_id") ?? undefined);
     items = filterBySearch(items, searchParams.get("search") ?? undefined, (item) =>
       [item.creativeId, item.competitorName, item.destinationName ?? "", item.transparencyUrl ?? ""].join(" "),
     );
@@ -390,29 +778,35 @@ export async function getAdsSummary(searchParams: URLSearchParams = new URLSearc
     }
 
     return {
-      totalAds: items.length,
+      totalAds: items.filter((item) => item.status !== "removed").length,
       newAds: items.filter((item) => item.status === "new").length,
       activeAds: items.filter((item) => item.status === "active").length,
       removedAds: items.filter((item) => item.status === "removed").length,
+      removedAdsLast7Days: items.filter(
+        (item) => item.status === "removed" && isWithinLastDays(item.becameRemovedDate, 7),
+      ).length,
       changedAds: items.filter((item) => item.status === "changed").length,
     };
   }
 
   const db = getDb();
   if (!db) {
-    return { totalAds: 0, newAds: 0, activeAds: 0, removedAds: 0, changedAds: 0 };
+    return { totalAds: 0, newAds: 0, activeAds: 0, removedAds: 0, removedAdsLast7Days: 0, changedAds: 0 };
   }
 
   const status = searchParams.get("status");
   const competitorId = toFilterValue(searchParams, "competitor_id");
   const destinationId = toFilterValue(searchParams, "destination_id");
   const search = searchParams.get("search");
+  const schema = await getDestinationSchemaState();
+  const destinationFilter = adDestinationFilter(schema, destinationId);
 
   const rows = await db.execute(sql<AdsSummaryResponse>`
     WITH latest_status AS (
       SELECT DISTINCT ON (s.ad_id)
         s.ad_id,
-        s.status
+        s.status,
+        s.became_removed_date
       FROM ad_status s
       ORDER BY s.ad_id, s.updated_at DESC
     ),
@@ -435,10 +829,14 @@ export async function getAdsSummary(searchParams: URLSearchParams = new URLSearc
       ORDER BY snap.ad_id, snap.created_at DESC
     )
     SELECT
-      COUNT(*)::int AS "totalAds",
+      COUNT(*) FILTER (WHERE status <> 'removed')::int AS "totalAds",
       COUNT(*) FILTER (WHERE status = 'new')::int AS "newAds",
       COUNT(*) FILTER (WHERE status = 'active')::int AS "activeAds",
       COUNT(*) FILTER (WHERE status = 'removed')::int AS "removedAds",
+      COUNT(*) FILTER (
+        WHERE status = 'removed'
+          AND became_removed_date >= CURRENT_DATE - INTERVAL '7 days'
+      )::int AS "removedAdsLast7Days",
       COUNT(*) FILTER (WHERE status = 'changed')::int AS "changedAds"
     FROM latest_status ls
     JOIN ads a ON a.id = ls.ad_id
@@ -448,7 +846,7 @@ export async function getAdsSummary(searchParams: URLSearchParams = new URLSearc
     LEFT JOIN competitors c ON c.id = a.competitor_id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
       AND (${competitorId}::text IS NULL OR a.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR ai.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${search}::text IS NULL OR a.creative_id ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
       AND (
         ls.status = 'removed'
@@ -466,6 +864,7 @@ export async function getAdsSummary(searchParams: URLSearchParams = new URLSearc
     newAds: Number(rows[0]?.newAds ?? 0),
     activeAds: Number(rows[0]?.activeAds ?? 0),
     removedAds: Number(rows[0]?.removedAds ?? 0),
+    removedAdsLast7Days: Number(rows[0]?.removedAdsLast7Days ?? 0),
     changedAds: Number(rows[0]?.changedAds ?? 0),
   };
 }
@@ -480,9 +879,11 @@ export async function listOffers(searchParams: URLSearchParams): Promise<OffersR
     const status = searchParams.get("status");
     if (status) {
       items = items.filter((item) => item.status === status);
+    } else {
+      items = items.filter((item) => item.status !== "removed");
     }
     items = filterByIds(items, toFilterValue(searchParams, "competitor_id") ?? undefined, (item) => item.competitorId);
-    items = filterByIds(items, toFilterValue(searchParams, "destination_id") ?? undefined, (item) => item.destinationId);
+    items = filterByDestinationAssignments(items, toFilterValue(searchParams, "destination_id") ?? undefined);
     items = filterBySearch(items, searchParams.get("search") ?? undefined, (item) =>
       [item.offerTitle, item.offerUrl, item.competitorName, item.destinationName ?? ""].join(" "),
     );
@@ -498,6 +899,9 @@ export async function listOffers(searchParams: URLSearchParams): Promise<OffersR
   const competitorId = toFilterValue(searchParams, "competitor_id");
   const destinationId = toFilterValue(searchParams, "destination_id");
   const search = searchParams.get("search");
+  const schema = await getDestinationSchemaState();
+  const destinationAssignmentsSelect = offerDestinationsSelect(schema);
+  const destinationFilter = offerDestinationFilter(schema, destinationId);
   const rows = await db.execute(sql<any>`
     WITH latest_status AS (
       SELECT DISTINCT ON (s.offer_id)
@@ -529,15 +933,17 @@ export async function listOffers(searchParams: URLSearchParams): Promise<OffersR
       c.name AS competitor_name,
       d.id AS destination_id,
       d.name AS destination_name,
-      d.country AS destination_country
+      d.country AS destination_country,
+      ${destinationAssignmentsSelect}
     FROM scraped_offers o
     LEFT JOIN latest_status ls ON ls.offer_id = o.id
     LEFT JOIN competitors c ON c.id = o.competitor_id
     LEFT JOIN offer_classification oc ON oc.offer_id = o.id
     LEFT JOIN destinations d ON d.id = oc.destination_id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
+      AND (${status}::text IS NOT NULL OR COALESCE(ls.status, 'active') <> 'removed')
       AND (${competitorId}::text IS NULL OR o.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR oc.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${search}::text IS NULL OR o.offer_title ILIKE ${`%${search ?? ""}%`} OR o.offer_url ILIKE ${`%${search ?? ""}%`})
     ORDER BY o.created_at DESC
     LIMIT ${limit}
@@ -556,8 +962,9 @@ export async function listOffers(searchParams: URLSearchParams): Promise<OffersR
     LEFT JOIN latest_status ls ON ls.offer_id = o.id
     LEFT JOIN offer_classification oc ON oc.offer_id = o.id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
+      AND (${status}::text IS NOT NULL OR COALESCE(ls.status, 'active') <> 'removed')
       AND (${competitorId}::text IS NULL OR o.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR oc.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${search}::text IS NULL OR o.offer_title ILIKE ${`%${search ?? ""}%`} OR o.offer_url ILIKE ${`%${search ?? ""}%`})
   `);
   const total = Number(totalRows[0]?.count ?? 0);
@@ -583,6 +990,10 @@ export async function listOffers(searchParams: URLSearchParams): Promise<OffersR
       destinationId: row.destination_id ? Number(row.destination_id) : null,
       destinationName: row.destination_name ? String(row.destination_name) : null,
       destinationCountry: row.destination_country ? String(row.destination_country) : null,
+      destinations:
+        parseDestinationAssignments(row.destinations).length > 0
+          ? parseDestinationAssignments(row.destinations)
+          : legacyDestinationAssignment(row),
     })),
     pagination: {
       total,
@@ -602,50 +1013,65 @@ export async function getOffersSummary(searchParams: URLSearchParams = new URLSe
       items = items.filter((item) => item.status === status);
     }
     items = filterByIds(items, toFilterValue(searchParams, "competitor_id") ?? undefined, (item) => item.competitorId);
-    items = filterByIds(items, toFilterValue(searchParams, "destination_id") ?? undefined, (item) => item.destinationId);
+    items = filterByDestinationAssignments(items, toFilterValue(searchParams, "destination_id") ?? undefined);
     items = filterBySearch(items, searchParams.get("search") ?? undefined, (item) =>
       [item.offerTitle, item.offerUrl, item.competitorName, item.destinationName ?? ""].join(" "),
     );
 
     return {
-      totalOffers: items.length,
+      totalOffers: items.filter((item) => item.status !== "removed").length,
       newOffers: items.filter((item) => item.status === "new").length,
       activeOffers: items.filter((item) => item.status === "active").length,
       removedOffers: items.filter((item) => item.status === "removed").length,
+      removedOffersLast7Days: items.filter((item) => item.status === "removed").length,
       changedOffers: items.filter((item) => item.status === "changed").length,
     };
   }
 
   const db = getDb();
   if (!db) {
-    return { totalOffers: 0, newOffers: 0, activeOffers: 0, removedOffers: 0, changedOffers: 0 };
+    return {
+      totalOffers: 0,
+      newOffers: 0,
+      activeOffers: 0,
+      removedOffers: 0,
+      removedOffersLast7Days: 0,
+      changedOffers: 0,
+    };
   }
 
   const status = searchParams.get("status");
   const competitorId = toFilterValue(searchParams, "competitor_id");
   const destinationId = toFilterValue(searchParams, "destination_id");
   const search = searchParams.get("search");
+  const schema = await getDestinationSchemaState();
+  const destinationFilter = offerDestinationFilter(schema, destinationId);
 
   const rows = await db.execute(sql<OffersSummaryResponse>`
     WITH latest_status AS (
       SELECT DISTINCT ON (s.offer_id)
         s.offer_id,
-        s.status
+        s.status,
+        s.became_removed_date
       FROM offer_status s
       ORDER BY s.offer_id, s.updated_at DESC
     )
     SELECT
-      COUNT(*)::int AS "totalOffers",
+      COUNT(*) FILTER (WHERE COALESCE(status, 'active') <> 'removed')::int AS "totalOffers",
       COUNT(*) FILTER (WHERE status = 'new')::int AS "newOffers",
       COUNT(*) FILTER (WHERE status = 'active')::int AS "activeOffers",
       COUNT(*) FILTER (WHERE status = 'removed')::int AS "removedOffers",
+      COUNT(*) FILTER (
+        WHERE status = 'removed'
+          AND became_removed_date >= CURRENT_DATE - INTERVAL '7 days'
+      )::int AS "removedOffersLast7Days",
       COUNT(*) FILTER (WHERE status = 'changed')::int AS "changedOffers"
     FROM latest_status ls
     JOIN scraped_offers o ON o.id = ls.offer_id
     LEFT JOIN offer_classification oc ON oc.offer_id = o.id
     WHERE (${status}::text IS NULL OR ls.status = ${status})
       AND (${competitorId}::text IS NULL OR o.competitor_id = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR oc.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${search}::text IS NULL OR o.offer_title ILIKE ${`%${search ?? ""}%`} OR o.offer_url ILIKE ${`%${search ?? ""}%`})
   `);
 
@@ -654,6 +1080,7 @@ export async function getOffersSummary(searchParams: URLSearchParams = new URLSe
     newOffers: Number(rows[0]?.newOffers ?? 0),
     activeOffers: Number(rows[0]?.activeOffers ?? 0),
     removedOffers: Number(rows[0]?.removedOffers ?? 0),
+    removedOffersLast7Days: Number(rows[0]?.removedOffersLast7Days ?? 0),
     changedOffers: Number(rows[0]?.changedOffers ?? 0),
   };
 }
@@ -749,9 +1176,7 @@ export async function listAlerts(searchParams: URLSearchParams): Promise<Notific
     items = filterByIds(items, toFilterValue(searchParams, "competitor_id") ?? undefined, (item) =>
       item.competitorId ? Number(item.competitorId) : null,
     );
-    items = filterByIds(items, toFilterValue(searchParams, "destination_id") ?? undefined, (item) =>
-      item.destinationId ? Number(item.destinationId) : null,
-    );
+    items = filterByDestinationAssignments(items, toFilterValue(searchParams, "destination_id") ?? undefined);
     items = filterBySearch(items, searchParams.get("search") ?? undefined, (item) =>
       [item.message, item.competitorName, item.destinationName ?? "", item.priceText ?? ""].join(" "),
     );
@@ -773,6 +1198,9 @@ export async function listAlerts(searchParams: URLSearchParams): Promise<Notific
   const competitorId = toFilterValue(searchParams, "competitor_id");
   const destinationId = toFilterValue(searchParams, "destination_id");
   const search = searchParams.get("search");
+  const schema = await getDestinationSchemaState();
+  const destinationAssignmentsSelect = offerDestinationsSelect(schema);
+  const destinationFilter = offerDestinationFilter(schema, destinationId);
   const rows = await db.execute(sql<any>`
     SELECT
       a.id,
@@ -788,6 +1216,7 @@ export async function listAlerts(searchParams: URLSearchParams): Promise<Notific
       c.name AS competitor_name,
       d.id AS destination_id,
       d.name AS destination_name,
+      ${destinationAssignmentsSelect},
       CASE
         WHEN a.marketing_offer_id IS NOT NULL THEN 'marketing'
         ELSE 'offers'
@@ -800,7 +1229,7 @@ export async function listAlerts(searchParams: URLSearchParams): Promise<Notific
     LEFT JOIN offer_classification oc ON oc.offer_id = o.id
     LEFT JOIN destinations d ON d.id = oc.destination_id
     WHERE (${competitorId}::text IS NULL OR COALESCE(o.competitor_id, mo.competitor_id) = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR oc.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${source}::text IS NULL OR CASE WHEN a.marketing_offer_id IS NOT NULL THEN 'marketing' ELSE 'offers' END = ${source})
       AND (${search}::text IS NULL OR a.message ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
       AND (${status}::text IS NULL OR
@@ -819,7 +1248,7 @@ export async function listAlerts(searchParams: URLSearchParams): Promise<Notific
     LEFT JOIN competitors c ON c.id = COALESCE(o.competitor_id, mo.competitor_id)
     LEFT JOIN offer_classification oc ON oc.offer_id = o.id
     WHERE (${competitorId}::text IS NULL OR COALESCE(o.competitor_id, mo.competitor_id) = ANY(string_to_array(${competitorId}, ',')::int[]))
-      AND (${destinationId}::text IS NULL OR oc.destination_id = ANY(string_to_array(${destinationId}, ',')::int[]))
+      ${destinationFilter}
       AND (${source}::text IS NULL OR CASE WHEN a.marketing_offer_id IS NOT NULL THEN 'marketing' ELSE 'offers' END = ${source})
       AND (${search}::text IS NULL OR a.message ILIKE ${`%${search ?? ""}%`} OR c.name ILIKE ${`%${search ?? ""}%`})
       AND (${status}::text IS NULL OR
@@ -840,6 +1269,10 @@ export async function listAlerts(searchParams: URLSearchParams): Promise<Notific
       competitorName: String(row.competitor_name ?? ""),
       destinationId: row.destination_id ? String(row.destination_id) : null,
       destinationName: row.destination_name ? String(row.destination_name) : null,
+      destinations:
+        parseDestinationAssignments(row.destinations).length > 0
+          ? parseDestinationAssignments(row.destinations)
+          : legacyDestinationAssignment(row),
       message: String(row.message ?? ""),
       createdAt: toIsoString(row.created_at) ?? new Date(0).toISOString(),
       isRead: false,

@@ -22,6 +22,22 @@ export interface DestinationDto {
   id: number;
   name: string;
   country: string;
+  slug: string | null;
+  parentId: number | null;
+  destinationType: string;
+  isOlympic: boolean;
+  sortOrder: number | null;
+}
+
+export interface DestinationAssignmentDto {
+  id: number;
+  name: string;
+  country: string;
+  slug: string | null;
+  parentId: number | null;
+  destinationType: string;
+  role: "primary" | "matched" | "rollup";
+  confidenceScore: number | null;
 }
 
 export interface PaginationMeta {
@@ -39,6 +55,7 @@ export interface AdRecord {
   destinationId: number | null;
   destinationName: string | null;
   destinationCountry: string | null;
+  destinations: DestinationAssignmentDto[];
   format: string | null;
   firstSeenGlobal: string | null;
   lastSeenGlobal: string | null;
@@ -76,6 +93,7 @@ export interface AdsSummaryResponse {
   newAds: number;
   activeAds: number;
   removedAds: number;
+  removedAdsLast7Days?: number;
   changedAds: number;
 }
 
@@ -99,6 +117,7 @@ export interface OfferRecord {
   destinationId: number | null;
   destinationName: string | null;
   destinationCountry: string | null;
+  destinations: DestinationAssignmentDto[];
 }
 
 export interface OffersResponse {
@@ -111,6 +130,7 @@ export interface OffersSummaryResponse {
   newOffers: number;
   activeOffers: number;
   removedOffers: number;
+  removedOffersLast7Days?: number;
   changedOffers: number;
 }
 
@@ -143,6 +163,7 @@ export interface NotificationItem {
   competitorName: string;
   destinationId: string | null;
   destinationName: string | null;
+  destinations: DestinationAssignmentDto[];
   message: string;
   createdAt: string;
   isRead: boolean;

@@ -6,6 +6,7 @@ interface SummaryCardProps {
   title: string;
   value: number;
   subtitle?: string;
+  secondaryText?: string;
   icon: LucideIcon;
   variant?: "default" | "success" | "warning" | "danger";
   trend?: {
@@ -26,6 +27,7 @@ export function SummaryCard({
   title,
   value,
   subtitle,
+  secondaryText,
   icon: Icon,
   variant = "default",
   trend,
@@ -47,6 +49,9 @@ export function SummaryCard({
               </p>
             )}
             {subtitle ? <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p> : null}
+            {secondaryText ? (
+              <p className="mt-2 text-xs font-medium text-muted-foreground">{secondaryText}</p>
+            ) : null}
             {trend ? (
               <p className="mt-2 text-xs text-muted-foreground">
                 {trend.value > 0 ? "+" : ""}

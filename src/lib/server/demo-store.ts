@@ -7,6 +7,7 @@ import type {
   AdsSummaryResponse,
   CapabilityState,
   CompetitorCapability,
+  DestinationAssignmentDto,
   CompetitorDto,
   DestinationDto,
   LifecycleStatus,
@@ -155,6 +156,41 @@ function destinationLookup(text: string | null | undefined) {
   return best;
 }
 
+function destinationAssignments(destination: DestinationDto | null | undefined): DestinationAssignmentDto[] {
+  if (!destination) return [];
+
+  const parent = destination.parentId
+    ? destinationSeed.find((item) => item.id === destination.parentId)
+    : null;
+  const assignments: DestinationAssignmentDto[] = parent
+    ? [
+        {
+          id: parent.id,
+          name: parent.name,
+          country: parent.country,
+          slug: parent.slug ?? null,
+          parentId: parent.parentId,
+          destinationType: parent.destinationType,
+          role: "rollup" as const,
+          confidenceScore: null,
+        },
+      ]
+    : [];
+
+  assignments.push({
+    id: destination.id,
+    name: destination.name,
+    country: destination.country,
+    slug: destination.slug,
+    parentId: destination.parentId,
+    destinationType: destination.destinationType,
+    role: "primary" as const,
+    confidenceScore: null,
+  });
+
+  return assignments;
+}
+
 function capabilityStateForResult(
   status: "success" | "partial" | "blocked" | "failed" | undefined,
 ): CapabilityState {
@@ -275,6 +311,7 @@ function createOffers(summary: ScrapeRunSummary | null): OfferRecord[] {
           destinationId: destination?.id ?? null,
           destinationName: destination?.name ?? null,
           destinationCountry: destination?.country ?? null,
+          destinations: destinationAssignments(destination),
         } satisfies OfferRecord;
       });
     });
@@ -324,6 +361,7 @@ function createAlerts(offers: OfferRecord[], marketingOffers: MarketingOfferReco
     competitorName: offer.competitorName,
     destinationId: offer.destinationId ? String(offer.destinationId) : null,
     destinationName: offer.destinationName,
+    destinations: offer.destinations,
     message: `Offer "${offer.offerTitle}" is new`,
     createdAt: offer.createdAt,
     isRead: false,
@@ -343,6 +381,7 @@ function createAlerts(offers: OfferRecord[], marketingOffers: MarketingOfferReco
     competitorName: offer.competitorName,
     destinationId: null,
     destinationName: null,
+    destinations: [],
     message: `Marketing offer "${offer.title}" is new`,
     createdAt: offer.createdAt,
     isRead: false,
@@ -366,6 +405,7 @@ function createAds(artifact: AdsArtifactSummary | null): { ads: AdRecord[]; summ
         newAds: 0,
         activeAds: 0,
         removedAds: 0,
+        removedAdsLast7Days: 0,
         changedAds: 0,
       },
     };
@@ -380,6 +420,9 @@ function createAds(artifact: AdsArtifactSummary | null): { ads: AdRecord[]; summ
       destinationId: record.destinationId,
       destinationName: record.destinationName,
       destinationCountry: record.destinationCountry,
+      destinations: destinationAssignments(
+        record.destinationId ? destinationSeed.find((item) => item.id === record.destinationId) : null,
+      ),
       format: record.format,
       firstSeenGlobal: record.firstShown,
       lastSeenGlobal: record.lastShown,
@@ -419,6 +462,7 @@ function createAds(artifact: AdsArtifactSummary | null): { ads: AdRecord[]; summ
       newAds: 0,
       activeAds: ads.length,
       removedAds: 0,
+      removedAdsLast7Days: 0,
       changedAds: 0,
     },
   };
@@ -426,10 +470,11 @@ function createAds(artifact: AdsArtifactSummary | null): { ads: AdRecord[]; summ
 
 function createOffersSummary(offers: OfferRecord[]) {
   return {
-    totalOffers: offers.length,
+    totalOffers: offers.filter((offer) => offer.status !== "removed").length,
     newOffers: offers.filter((offer) => offer.status === "new").length,
     activeOffers: offers.filter((offer) => offer.status === "active").length,
     removedOffers: offers.filter((offer) => offer.status === "removed").length,
+    removedOffersLast7Days: offers.filter((offer) => offer.status === "removed").length,
     changedOffers: offers.filter((offer) => offer.status === "changed").length,
   };
 }

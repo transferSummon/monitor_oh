@@ -34,6 +34,7 @@ const fallbackSummary: AdsSummaryResponse = {
   newAds: 0,
   activeAds: 0,
   removedAds: 0,
+  removedAdsLast7Days: 0,
   changedAds: 0,
 };
 const LIVE_PRICE_PLAIN_LABEL_COMPETITORS = new Set(["Jet2 Holidays", "TUI"]);

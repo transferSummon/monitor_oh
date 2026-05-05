@@ -98,6 +98,12 @@ export function OfferCard({ offer }: OfferCardProps) {
   const destinationTags = getTags(parsedDescription?.destinations, 3);
   const productTypeTags = getTags(parsedDescription?.product_types, 2);
   const imageSrc = offer.image_url || "/placeholder.svg";
+  const classifiedDestinations =
+    offer.destinations.length > 0
+      ? offer.destinations.map((destination) => destination.name)
+      : offer.destination_name
+        ? [offer.destination_name]
+        : [];
 
   return (
     <div className="rounded-lg bg-card p-4 shadow-card transition-all hover:shadow-md animate-fade-in">
@@ -142,7 +148,17 @@ export function OfferCard({ offer }: OfferCardProps) {
           </div>
           <div>
             <p className="text-muted-foreground">Destination</p>
-            <p className="font-medium text-card-foreground">{offer.destination_name || "—"}</p>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {classifiedDestinations.length > 0 ? (
+                classifiedDestinations.map((destination) => (
+                  <Badge key={destination} variant="secondary" className="text-xs">
+                    {destination}
+                  </Badge>
+                ))
+              ) : (
+                <span className="font-medium text-card-foreground">—</span>
+              )}
+            </div>
           </div>
         </div>
 

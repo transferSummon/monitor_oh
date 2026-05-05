@@ -103,6 +103,9 @@ const mapRaw = (ad: Record<string, unknown>): CreativeRecord => {
       typeof ad.destination_name === "string" ? ad.destination_name : null,
     destination_country:
       typeof ad.destination_country === "string" ? ad.destination_country : null,
+    destinations: Array.isArray(ad.destinations)
+      ? (ad.destinations as CreativeRecord["destinations"])
+      : [],
     title: typeof ad.title === "string" ? ad.title : null,
     snippet: typeof ad.snippet === "string" ? ad.snippet : null,
     url: typeof ad.url === "string" ? ad.url : null,
@@ -362,6 +365,7 @@ export function Dashboard() {
     newAds: summary?.newAds ?? 0,
     activeAds: summary?.activeAds ?? 0,
     removedAds: summary?.removedAds ?? 0,
+    removedAdsLast7Days: summary?.removedAdsLast7Days ?? 0,
     changedAds: summary?.changedAds ?? 0,
   };
 

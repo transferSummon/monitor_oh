@@ -1,4 +1,5 @@
 import {
+  boolean,
   date,
   doublePrecision,
   integer,
@@ -37,6 +38,11 @@ export const destinations = pgTable("destinations", {
   id: serial("id").primaryKey(),
   name: varchar("name", { length: 255 }).notNull(),
   country: varchar("country", { length: 255 }).notNull(),
+  slug: varchar("slug", { length: 255 }),
+  parentId: integer("parent_id").references((): any => destinations.id),
+  destinationType: varchar("destination_type", { length: 50 }).notNull().default("country"),
+  isOlympic: boolean("is_olympic").notNull().default(false),
+  sortOrder: integer("sort_order"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -136,6 +142,26 @@ export const aiClassification = pgTable("ai_classification", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export const adDestinations = pgTable(
+  "ad_destinations",
+  {
+    id: serial("id").primaryKey(),
+    adId: integer("ad_id")
+      .notNull()
+      .references(() => ads.id, { onDelete: "cascade" }),
+    destinationId: integer("destination_id")
+      .notNull()
+      .references(() => destinations.id),
+    role: varchar("role", { length: 32 }).notNull(),
+    confidenceScore: doublePrecision("confidence_score"),
+    source: varchar("source", { length: 32 }).notNull().default("keyword"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    adDestinationKey: uniqueIndex("ad_destinations_ad_id_destination_id_key").on(table.adId, table.destinationId),
+  }),
+);
+
 export const scrapedOffers = pgTable(
   "scraped_offers",
   {
@@ -213,6 +239,29 @@ export const offerClassification = pgTable(
   },
   (table) => ({
     offerClassificationOfferIdKey: uniqueIndex("offer_classification_offer_id_key").on(table.offerId),
+  }),
+);
+
+export const offerDestinations = pgTable(
+  "offer_destinations",
+  {
+    id: serial("id").primaryKey(),
+    offerId: integer("offer_id")
+      .notNull()
+      .references(() => scrapedOffers.id, { onDelete: "cascade" }),
+    destinationId: integer("destination_id")
+      .notNull()
+      .references(() => destinations.id),
+    role: varchar("role", { length: 32 }).notNull(),
+    confidenceScore: doublePrecision("confidence_score"),
+    source: varchar("source", { length: 32 }).notNull().default("keyword"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    offerDestinationKey: uniqueIndex("offer_destinations_offer_id_destination_id_key").on(
+      table.offerId,
+      table.destinationId,
+    ),
   }),
 );
 

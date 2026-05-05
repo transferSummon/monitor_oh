@@ -40,6 +40,12 @@ export function NotificationCard({ notification }: { notification: NotificationI
   const sourceLabel =
     notification.source === "marketing" ? "Marketing Offers" : "Live Prices";
   const ctaLabel = notification.source === "marketing" ? "View Promotion" : "View Offer";
+  const destinations =
+    notification.destinations.length > 0
+      ? notification.destinations.map((destination) => destination.name)
+      : notification.destination_name
+        ? [notification.destination_name]
+        : ["Unknown"];
 
   return (
     <div className="rounded-lg bg-card p-4 shadow-card transition-all hover:shadow-md animate-fade-in">
@@ -66,9 +72,11 @@ export function NotificationCard({ notification }: { notification: NotificationI
               ) : null}
               <span className="text-sm text-muted-foreground">{notification.competitor_name}</span>
               <span className="text-muted-foreground">•</span>
-              <span className="text-sm text-muted-foreground">
-                {notification.destination_name || "Unknown"}
-              </span>
+              {destinations.map((destination) => (
+                <Badge key={destination} variant="secondary">
+                  {destination}
+                </Badge>
+              ))}
             </div>
           </div>
 

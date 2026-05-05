@@ -5,6 +5,7 @@ import { closeDb, hasDatabase } from "@olympic/db";
 
 import {
   backfillAdClassifications,
+  backfillDestinationAssignments,
   createBatchRunId,
   finishJobBatch,
   inspectLatestBatch,
@@ -22,6 +23,7 @@ function usage() {
     "  worker run --module offers|marketing|ads [--competitor <slug>] [--batch-run-id <id>] [--json-logs]",
     "  worker run-all [--modules offers,marketing,ads]",
     "  worker backfill-ads [--ocr-missing] [--limit <count>]",
+    "  worker backfill-destinations --dry-run|--apply [--module all|ads|offers] [--limit <count>]",
     "  worker repair-ad-statuses --dry-run|--apply",
     "  worker inspect --latest",
   ].join("\n");
@@ -289,6 +291,40 @@ async function backfillAds(args: string[]) {
   }
 }
 
+async function backfillDestinations(args: string[]) {
+  const apply = hasFlag(args, "--apply");
+  const dryRun = hasFlag(args, "--dry-run");
+  const moduleValue = getFlag(args, "--module") ?? "all";
+  const limitValue = getFlag(args, "--limit");
+  const parsedLimit = Number.parseInt(limitValue ?? "", 10);
+
+  if (apply === dryRun) {
+    console.error("Use exactly one of --dry-run or --apply.");
+    console.error(usage());
+    process.exitCode = 1;
+    return;
+  }
+
+  if (moduleValue !== "all" && moduleValue !== "ads" && moduleValue !== "offers") {
+    console.error("Use --module all, --module ads, or --module offers.");
+    console.error(usage());
+    process.exitCode = 1;
+    return;
+  }
+
+  const result = await backfillDestinationAssignments({
+    module: moduleValue,
+    apply,
+    limit: Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : null,
+  });
+
+  console.log(JSON.stringify(result, null, 2));
+
+  if (!result.ok) {
+    process.exitCode = 1;
+  }
+}
+
 async function repairAds(args: string[]) {
   const apply = hasFlag(args, "--apply");
   const dryRun = hasFlag(args, "--dry-run");
@@ -320,6 +356,9 @@ async function main() {
       return;
     case "backfill-ads":
       await backfillAds(rest);
+      return;
+    case "backfill-destinations":
+      await backfillDestinations(rest);
       return;
     case "repair-ad-statuses":
       await repairAds(rest);

@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { CreativeRecord } from "@/types/snapshot";
 
-import { formatDestination, formatRegions, getImageFromAd, getVideoUrlsFromAd } from "./adUtils";
+import { formatRegions, getDestinationLabels, getImageFromAd, getVideoUrlsFromAd } from "./adUtils";
 
 const fmt = (d?: string | null) => (d ? d.split("T")[0] : "");
 
@@ -56,7 +56,7 @@ export function AdCard({ ad, type }: AdCardProps) {
   const transparencyUrl = ad.url || getTransparencyUrl(ad.advertiser_id, ad.creative_id);
   const imageUrl = getImageFromAd(ad);
   const videoUrls = getVideoUrlsFromAd(ad);
-  const destination = formatDestination(ad);
+  const destinations = getDestinationLabels(ad);
   const youtubeVideo = videoUrls.find((url) => isYouTube(url));
   const youtubeId = youtubeVideo ? extractYouTubeId(youtubeVideo) : null;
   const mp4Video = videoUrls.find((url) => isMp4(url) || isVideoCdn(url));
@@ -96,8 +96,13 @@ export function AdCard({ ad, type }: AdCardProps) {
           </Badge>
         </div>
 
-        <div className="text-sm text-muted-foreground">
-          Destination: <span className="text-card-foreground">{destination}</span>
+        <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+          <span>Destination:</span>
+          {destinations.map((destination) => (
+            <Badge key={destination} variant="secondary" className="text-xs">
+              {destination}
+            </Badge>
+          ))}
         </div>
 
         <div className="text-sm text-muted-foreground">

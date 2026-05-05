@@ -1,5 +1,10 @@
 import type { CompetitorSlug } from "scraper-engine";
 
+export interface NormalizedDestinationAssignment {
+  destinationId: number;
+  role: "primary" | "matched" | "rollup";
+}
+
 export interface DataForSeoAdsSearchItem {
   type: string;
   rank_group: number;
@@ -44,6 +49,7 @@ export interface NormalizedAdRecord {
   destinationId: number | null;
   destinationName: string | null;
   destinationCountry: string | null;
+  destinationAssignments: NormalizedDestinationAssignment[];
   confidenceScore: number | null;
   snapshotHash: string;
   rawData: Record<string, unknown>;
