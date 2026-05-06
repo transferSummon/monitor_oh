@@ -178,8 +178,8 @@ export function FilterBar({
 
         {greekDestinations.length > 0
           ? renderDestinationDropdown(
-              "Greek destinations",
-              "All Greek destinations",
+              "Greece destinations",
+              "All Greece destinations",
               greekDestinations,
               allGreekDestinationsSelected,
             )
