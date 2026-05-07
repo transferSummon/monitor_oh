@@ -5,7 +5,7 @@ function unauthorized() {
   return new NextResponse("Authentication required.", {
     status: 401,
     headers: {
-      "WWW-Authenticate": 'Basic realm="Olympic Holiday Monitor"',
+      "WWW-Authenticate": 'Basic realm="Olympic Holidays Monitor"',
     },
   });
 }

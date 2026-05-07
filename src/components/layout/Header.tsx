@@ -26,11 +26,11 @@ export function Header() {
         <div className="flex items-center">
           <img
             src="/logo.png"
-            alt="Olympic Holiday Logo"
+            alt="Olympic Holidays Logo"
             className="mr-3 h-8 w-auto"
           />
           <div className="flex flex-col">
-            <h1 className="text-xl font-semibold text-foreground">Olympic Holiday</h1>
+            <h1 className="text-xl font-semibold text-foreground">Olympic Holidays</h1>
             <span className="leading-none text-xs text-muted-foreground">Ad Monitor</span>
           </div>
         </div>

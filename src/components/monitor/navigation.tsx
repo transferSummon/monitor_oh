@@ -21,7 +21,7 @@ export function MonitorNavigation() {
       <div className="brand-lockup">
         <span className="brand-mark">OH</span>
         <div>
-          <p className="brand-kicker">Olympic Holiday</p>
+          <p className="brand-kicker">Olympic Holidays</p>
           <h1>Monitor</h1>
         </div>
       </div>

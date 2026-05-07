@@ -7,8 +7,8 @@ import { listAlerts } from "@/lib/server/repository";
 import "@/app/globals.css";
 
 export const metadata: Metadata = {
-  title: "Olympic Holiday",
-  description: "Olympic Holiday ad monitor dashboard.",
+  title: "Olympic Holidays",
+  description: "Olympic Holidays ad monitor dashboard.",
 };
 
 export default async function RootLayout({
